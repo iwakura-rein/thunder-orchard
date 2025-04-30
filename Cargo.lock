@@ -6872,6 +6872,7 @@ dependencies = [
  "ed25519-dalek",
  "educe",
  "fallible-iterator",
+ "fatality",
  "futures",
  "governor",
  "halo2_proofs",
