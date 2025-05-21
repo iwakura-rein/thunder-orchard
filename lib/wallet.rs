@@ -1,20 +1,23 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::Path,
     rc::Rc,
 };
 
 use bitcoin::{
     Amount,
+    amount::CheckedSum,
     bip32::{ChildNumber, DerivationPath, Xpriv},
 };
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
+use hashlink::LinkedHashMap;
 use heed::{
     byteorder::BigEndian,
     types::{Bytes, SerdeBincode, U8, U32},
 };
 use parking_lot::RwLock;
+use rand::distributions::uniform::UniformSampler;
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
@@ -543,7 +546,7 @@ impl Wallet {
         &self,
         rotxn: &RoTxn,
         value: bitcoin::Amount,
-    ) -> Result<(bitcoin::Amount, HashMap<OutPoint, Output>), Error> {
+    ) -> Result<(bitcoin::Amount, LinkedHashMap<OutPoint, Output>), Error> {
         let mut utxos: Vec<_> = self
             .utxos
             .iter(rotxn)
@@ -552,7 +555,7 @@ impl Wallet {
             .map_err(DbError::from)?;
         utxos.sort_unstable_by_key(|(_, output)| output.get_value());
 
-        let mut selected = HashMap::new();
+        let mut selected = LinkedHashMap::new();
         let mut total = bitcoin::Amount::ZERO;
         for (outpoint, output) in &utxos {
             if output.content.is_withdrawal() {
@@ -737,22 +740,28 @@ impl Wallet {
         Ok(res)
     }
 
-    /// Create a transaction that shields the specified amount.
+    /// Create a transaction that shields the specified amount,
+    /// spending the specified UTXOs.
     ///
     /// If at least one note is available to spend, spends a note and creates
     /// a new note worth `value` more than the spent note.
-    pub fn create_shield_transaction(
+    pub fn create_shield_transaction_from_utxos(
         &self,
+        mut rwtxn: RwTxn,
         accumulator: &Accumulator,
-        value: bitcoin::Amount,
+        shield_amount: bitcoin::Amount,
         fee: bitcoin::Amount,
+        coins: Vec<(OutPoint, Output)>,
     ) -> Result<Transaction, Error> {
-        let mut rwtxn = self.env.write_txn()?;
-        let (value_in, coins) = self.select_transparent_coins(
-            &rwtxn,
-            value.checked_add(fee).ok_or(AmountOverflowError)?,
-        )?;
-        let change = value_in - value - fee;
+        let value_in = coins
+            .iter()
+            .map(|(_, output)| output.get_value())
+            .checked_sum()
+            .ok_or(AmountOverflowError)?;
+        let change = value_in
+            .checked_sub(shield_amount)
+            .and_then(|value| value.checked_sub(fee))
+            .ok_or(Error::NotEnoughFunds)?;
         let inputs: Vec<_> = coins
             .into_iter()
             .map(|(outpoint, output)| {
@@ -763,10 +772,14 @@ impl Wallet {
         let input_utxo_hashes: Vec<BitcoinNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let utreexo_proof = accumulator.prove(&input_utxo_hashes)?;
-        let outputs = vec![Output {
-            address: self.get_new_transparent_address(&mut rwtxn)?,
-            content: OutputContent::Value(change),
-        }];
+        let outputs = if change != Amount::ZERO {
+            vec![Output {
+                address: self.get_new_transparent_address(&mut rwtxn)?,
+                content: OutputContent::Value(change),
+            }]
+        } else {
+            Vec::new()
+        };
         let shielded_addr = self.get_new_orchard_address(&mut rwtxn)?;
         let orchard_spending_key = self.get_orchard_spending_key(&rwtxn)?;
         let mut rwtxn = ShardTreeDbTxn::Rw(rwtxn);
@@ -803,7 +816,7 @@ impl Wallet {
                 orchard::Builder::new(flags, true, anchor)
             };
             let output_note_value =
-                value + builder.value_balance()?.to_unsigned().unwrap();
+                shield_amount + builder.value_balance()?.to_unsigned().unwrap();
             builder.add_output(
                 Some(ovk.clone()),
                 shielded_addr,
@@ -829,6 +842,31 @@ impl Wallet {
         let res = authorization::sign_orchard(&[spend_auth_key], transaction)?;
         rwtxn.commit()?;
         Ok(res)
+    }
+
+    /// Create a transaction that shields the specified amount.
+    ///
+    /// If at least one note is available to spend, spends a note and creates
+    /// a new note worth `value` more than the spent note.
+    pub fn create_shield_transaction(
+        &self,
+        accumulator: &Accumulator,
+        shield_amount: bitcoin::Amount,
+        fee: bitcoin::Amount,
+    ) -> Result<Transaction, Error> {
+        let rwtxn = self.env.write_txn()?;
+        let (_, coins) = self.select_transparent_coins(
+            &rwtxn,
+            shield_amount.checked_add(fee).ok_or(AmountOverflowError)?,
+        )?;
+        let tx = self.create_shield_transaction_from_utxos(
+            rwtxn,
+            accumulator,
+            shield_amount,
+            fee,
+            coins.into_iter().collect(),
+        )?;
+        Ok(tx)
     }
 
     /// Create a transaction that unshields the specified amount.
@@ -1322,5 +1360,77 @@ impl Watchable<()> for Wallet {
             #[allow(clippy::unused_unit)]
             ()
         })
+    }
+}
+
+/// Represents a batch of UTXOs to be melted.
+#[derive(Debug)]
+#[must_use]
+pub struct MeltBatch {
+    /// Total time spent waiting for txs to be ready to send
+    elapsed: std::time::Duration,
+    /// UTXOs with total duration from start.
+    utxos_with_duration: VecDeque<((OutPoint, Output), std::time::Duration)>,
+}
+
+impl MeltBatch {
+    pub fn new(utxos: Vec<(OutPoint, Output)>) -> Self {
+        use std::time::Duration;
+        let mut utxos_with_duration: Vec<_> =
+            utxos.into_iter().map(|utxo| {
+                use rand::distributions::uniform;
+                let distribution =  <uniform::UniformDuration as uniform::UniformSampler>::new_inclusive(
+                    Duration::ZERO,
+                    Duration::from_secs(24 * 60 * 60),
+                );
+                let mut duration = distribution.sample(&mut rand::rngs::OsRng);
+                while duration == Duration::ZERO {
+                    // Re-sample if duration is zero
+                    duration = distribution.sample(&mut rand::rngs::OsRng);
+                };
+                (utxo, duration)
+            }).collect();
+        // Sort UTXOs by duration
+        utxos_with_duration.sort_by_key(|(_, duration)| *duration);
+        Self {
+            elapsed: Duration::ZERO,
+            utxos_with_duration: VecDeque::from(utxos_with_duration),
+        }
+    }
+
+    pub async fn next_tx(
+        &mut self,
+        fee: Amount,
+    ) -> Result<
+        Option<
+            impl FnOnce(&Accumulator, &Wallet) -> Result<Transaction, Error>,
+        >,
+        Error,
+    > {
+        let Some(((_, output), duration)) = self.utxos_with_duration.front()
+        else {
+            return Ok(None);
+        };
+        let shield_amount = output
+            .get_value()
+            .checked_sub(fee)
+            .ok_or(Error::NotEnoughFunds)?;
+        if self.elapsed < *duration {
+            let sleep_duration = *duration - self.elapsed;
+            tokio::time::sleep(sleep_duration).await;
+            self.elapsed = *duration;
+        }
+        let (utxo, _) = self.utxos_with_duration.pop_front().unwrap();
+        let res = move |accumulator: &Accumulator, wallet: &Wallet| {
+            let rwtxn = wallet.env.write_txn()?;
+            wallet.create_shield_transaction_from_utxos(
+                rwtxn,
+                accumulator,
+                shield_amount,
+                fee,
+                vec![utxo],
+            )
+        };
+        Ok(Some(res))
     }
 }
