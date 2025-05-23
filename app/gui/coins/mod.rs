@@ -11,7 +11,7 @@ mod tx_creator;
 mod utxo_creator;
 mod utxo_selector;
 
-use melt_cast::Melt;
+use melt_cast::{Cast, Melt};
 use shield_unshield::ShieldUnshield;
 use transfer_receive::TransferReceive;
 use tx_builder::TxBuilder;
@@ -25,11 +25,14 @@ enum Tab {
     ShieldUnshield,
     #[strum(to_string = "Melt")]
     Melt,
+    #[strum(to_string = "Cast")]
+    Cast,
     #[strum(to_string = "Transaction Builder")]
     TransactionBuilder,
 }
 
 pub struct Coins {
+    cast: Cast,
     melt: Melt,
     shield_unshield: ShieldUnshield,
     transfer_receive: TransferReceive,
@@ -40,6 +43,7 @@ pub struct Coins {
 impl Coins {
     pub fn new(app: Option<&App>) -> Self {
         Self {
+            cast: Cast::default(),
             melt: Melt::default(),
             shield_unshield: ShieldUnshield::default(),
             transfer_receive: TransferReceive::new(app),
@@ -58,6 +62,9 @@ impl Coins {
             });
         });
         egui::CentralPanel::default().show(ui.ctx(), |ui| match self.tab {
+            Tab::Cast => {
+                let () = self.cast.show(app, ui);
+            }
             Tab::Melt => {
                 let () = self.melt.show(app, ui);
             }
