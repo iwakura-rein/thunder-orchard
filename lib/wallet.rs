@@ -9,6 +9,7 @@ use bitcoin::{
     amount::CheckedSum,
     bip32::{ChildNumber, DerivationPath, Xpriv},
 };
+use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 use hashlink::LinkedHashMap;
@@ -17,7 +18,7 @@ use heed::{
     types::{Bytes, SerdeBincode, U8, U32},
 };
 use parking_lot::RwLock;
-use rand::distributions::uniform::UniformSampler;
+use rand::{Rng, distributions::uniform::UniformSampler};
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
@@ -1360,6 +1361,100 @@ impl Watchable<()> for Wallet {
             #[allow(clippy::unused_unit)]
             ()
         })
+    }
+}
+
+/// Represents an ongoing cast
+#[derive(Debug)]
+pub struct Cast {
+    /// Bill amounts in exponent form (n in 2^n sats) with a timestamp
+    /// indicating the time at which a tx should be created.
+    /// Sorted by timestamp, low to high
+    bill_exponents_with_timestamps: VecDeque<(u32, DateTime<Utc>)>,
+}
+
+impl Cast {
+    /// Convert an bill exponent (n in 2^n sats) to the weekday on which a
+    /// 2^n sats bill should be withdrawn
+    fn bill_exponent_to_weekday(exp: u32) -> chrono::Weekday {
+        match exp % 7 {
+            0 => chrono::Weekday::Sat,
+            1 => chrono::Weekday::Fri,
+            2 => chrono::Weekday::Thu,
+            3 => chrono::Weekday::Wed,
+            4 => chrono::Weekday::Tue,
+            5 => chrono::Weekday::Mon,
+            6 => chrono::Weekday::Sun,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn new(amount: Amount) -> Self {
+        let now = Utc::now();
+        let mut bill_exponents_with_timestamps: Vec<_> = std::iter::from_fn({
+            let mut amount_remaining = amount.to_sat();
+            move || {
+                if amount_remaining == 0 {
+                    None
+                } else {
+                    let bill_exponent = amount_remaining.ilog2();
+                    amount_remaining -= 1 << bill_exponent;
+                    let withdraw_on_weekday =
+                        Self::bill_exponent_to_weekday(bill_exponent);
+                    let withdraw_on_date = {
+                        let days_from_now =
+                            withdraw_on_weekday.days_since(now.weekday());
+                        now.date_naive()
+                            + chrono::Days::new(days_from_now as u64)
+                    };
+                    let time_of_day = if now.weekday() == withdraw_on_weekday {
+                        let min_secs = now.num_seconds_from_midnight();
+                        chrono::NaiveTime::from_num_seconds_from_midnight_opt(
+                            rand::rngs::OsRng.gen_range(min_secs..=86_399),
+                            0,
+                        )
+                        .unwrap()
+                    } else {
+                        chrono::NaiveTime::from_hms_opt(
+                            rand::rngs::OsRng.gen_range(0..=23),
+                            rand::rngs::OsRng.gen_range(0..=59),
+                            rand::rngs::OsRng.gen_range(0..=59),
+                        )
+                        .unwrap()
+                    };
+                    let timestamp = Utc.from_utc_datetime(
+                        &withdraw_on_date.and_time(time_of_day),
+                    );
+                    Some((bill_exponent, timestamp))
+                }
+            }
+        })
+        .collect();
+        bill_exponents_with_timestamps.sort_by_key(|(_, ts)| *ts);
+        Self {
+            bill_exponents_with_timestamps: VecDeque::from(
+                bill_exponents_with_timestamps,
+            ),
+        }
+    }
+
+    pub async fn next_tx(
+        &mut self,
+        fee: Amount,
+    ) -> Option<impl FnOnce(&Accumulator, &Wallet) -> Result<Transaction, Error>>
+    {
+        let (bill_exponent, ts) = self.bill_exponents_with_timestamps.front()?;
+        let sleep_duration =
+            std::cmp::max(*ts - Utc::now(), chrono::TimeDelta::zero())
+                .to_std()
+                .unwrap();
+        tokio::time::sleep(sleep_duration).await;
+        let amount = Amount::from_sat(1 << bill_exponent);
+        let _ = self.bill_exponents_with_timestamps.pop_front().unwrap();
+        let res = move |accumulator: &Accumulator, wallet: &Wallet| {
+            wallet.create_unshield_transaction(accumulator, amount, fee)
+        };
+        Some(res)
     }
 }
 
