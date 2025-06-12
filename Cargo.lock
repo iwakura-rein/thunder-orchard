@@ -6869,6 +6869,7 @@ dependencies = [
  "borsh",
  "bytemuck",
  "bytes",
+ "clap",
  "ed25519-dalek",
  "educe",
  "fallible-iterator",

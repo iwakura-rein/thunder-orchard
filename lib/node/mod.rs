@@ -21,8 +21,8 @@ use crate::{
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
-        OutPoint, Output, SpentOutput, Tip, Transaction, TransparentAddress,
-        Txid, WithdrawalBundle,
+        Network, OutPoint, Output, SpentOutput, Tip, Transaction,
+        TransparentAddress, Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -123,6 +123,7 @@ where
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
         >,
+        network: Network,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
     where
@@ -158,7 +159,7 @@ where
                 cusf_mainchain.clone(),
             );
         let (net, peer_info_rx) =
-            Net::new(&env, archive.clone(), state.clone(), bind_addr)?;
+            Net::new(&env, archive.clone(), network, state.clone(), bind_addr)?;
 
         let net_task = NetTaskHandle::new(
             runtime,
