@@ -387,7 +387,14 @@ impl App {
             return Err(Error::NoCusfMainchainWalletClient);
         };
         const NUM_TRANSACTIONS: usize = 1000;
+        tracing::debug!(
+            "mine: gathering up to {} transactions",
+            NUM_TRANSACTIONS
+        );
+
         let (txs, tx_fees) = self.node.get_transactions(NUM_TRANSACTIONS)?;
+
+        tracing::debug!("mine: constructing coinbase outputs");
         let address = (|| {
             let mut rwtxn = self.wallet.env().write_txn()?;
             let res = self.wallet.get_new_transparent_address(&mut rwtxn)?;
@@ -403,6 +410,8 @@ impl App {
         };
         let body = types::Body::new(txs, coinbase);
         let prev_side_hash = self.node.try_get_best_hash()?;
+        tracing::debug!(?prev_side_hash, "mine: fetched best sidechain hash");
+
         let prev_main_hash = {
             let mut miner_write = miner.write().await;
             let prev_main_hash =
@@ -410,7 +419,10 @@ impl App {
             drop(miner_write);
             prev_main_hash
         };
-        let roots = {
+
+        tracing::debug!(%prev_main_hash, "mine: fetched best mainchain hash");
+
+        let roots: Vec<rustreexo::accumulator::node_hash::BitcoinNodeHash> = {
             let mut accumulator = self.node.get_tip_accumulator()?;
             body.modify_memforest(&mut accumulator.0)
                 .map_err(Error::Utreexo)?;
@@ -421,6 +433,13 @@ impl App {
                 .map(|root| root.get_data())
                 .collect()
         };
+
+        tracing::debug!(
+            ?roots,
+            "mine: computed {} merkle root(s)",
+            roots.len()
+        );
+
         let header = types::Header {
             merkle_root: body.compute_merkle_root(),
             roots,
@@ -434,6 +453,8 @@ impl App {
                 Self::EMPTY_BLOCK_BMM_BRIBE
             }
         });
+
+        tracing::debug!("mine: attempting BMM...");
 
         let mut miner_write = miner.write().await;
         let bmm_txid = miner_write
