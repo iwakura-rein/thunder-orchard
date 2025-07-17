@@ -1,5 +1,8 @@
 use borsh::BorshSerialize;
-use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
+use rayon::{
+    iter::{IntoParallelRefIterator as _, ParallelIterator as _},
+    slice::ParallelSlice as _,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -43,130 +46,6 @@ pub enum Error {
     },
 }
 
-// Verify orchard authorization
-fn verify_orchard(transaction: &Transaction) -> Result<(), Error> {
-    if let Some(orchard_bundle) = &transaction.orchard_bundle {
-        let txid = transaction.txid();
-        let bvk = orchard_bundle.binding_validating_key();
-        let binding_sig = orchard_bundle.authorization().binding_signature();
-        let () = bvk.verify(txid.as_slice(), binding_sig)?;
-        let () = orchard_bundle.verify_proof()?;
-    };
-    Ok(())
-}
-
-pub fn verify_authorized_transaction(
-    transaction: &AuthorizedTransaction,
-) -> Result<(), Error> {
-    let () = verify_orchard(&transaction.transaction)?;
-
-    let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
-    let messages: Vec<_> = std::iter::repeat_n(
-        tx_bytes_canonical.as_slice(),
-        transaction.authorizations.len(),
-    )
-    .collect();
-    let (verifying_keys, signatures): (Vec<VerifyingKey>, Vec<Signature>) =
-        transaction
-            .authorizations
-            .iter()
-            .map(
-                |Authorization {
-                     verifying_key,
-                     signature,
-                 }| (verifying_key, signature),
-            )
-            .unzip();
-    ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)?;
-    Ok(())
-}
-
-struct Package<'a> {
-    messages: Vec<&'a [u8]>,
-    signatures: Vec<Signature>,
-    verifying_keys: Vec<VerifyingKey>,
-}
-
-pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
-    // TODO: batch orchard verifications
-    let () = body.transactions.par_iter().try_for_each(verify_orchard)?;
-    let verifications_required =
-        body.transactions.par_iter().map(|tx| tx.inputs.len()).sum();
-    match body.authorizations.len().cmp(&verifications_required) {
-        std::cmp::Ordering::Less => return Err(Error::NotEnoughAuthorizations),
-        std::cmp::Ordering::Equal => (),
-        std::cmp::Ordering::Greater => {
-            return Err(Error::TooManyAuthorizations);
-        }
-    }
-    if verifications_required == 0 {
-        return Ok(());
-    }
-    // pairs of serialized txs, and the number of inputs
-    let serialized_transactions_inputs: Vec<(Vec<u8>, usize)> = body
-        .transactions
-        .par_iter()
-        .map(|tx| Ok((borsh::to_vec(tx)?, tx.inputs.len())))
-        .collect::<Result<_, Error>>()?;
-    let messages =
-        serialized_transactions_inputs
-            .iter()
-            .flat_map(|(tx, n_inputs)| {
-                std::iter::repeat_n(tx.as_slice(), *n_inputs)
-            });
-    let pairs = body.authorizations.iter().zip(messages).collect::<Vec<_>>();
-
-    let num_threads = rayon::current_num_threads();
-    let num_authorizations = body.authorizations.len();
-    let package_size = num_authorizations / num_threads;
-    let mut packages: Vec<Package> = Vec::with_capacity(num_threads);
-    for i in 0..num_threads {
-        let mut package = Package {
-            messages: Vec::with_capacity(package_size),
-            signatures: Vec::with_capacity(package_size),
-            verifying_keys: Vec::with_capacity(package_size),
-        };
-        for (authorization, message) in
-            &pairs[i * package_size..(i + 1) * package_size]
-        {
-            package.messages.push(*message);
-            package.signatures.push(authorization.signature);
-            package.verifying_keys.push(authorization.verifying_key);
-        }
-        packages.push(package);
-    }
-    for (authorization, message) in &pairs[num_threads * package_size..] {
-        packages[num_threads - 1].messages.push(*message);
-        packages[num_threads - 1]
-            .signatures
-            .push(authorization.signature);
-        packages[num_threads - 1]
-            .verifying_keys
-            .push(authorization.verifying_key);
-    }
-    assert_eq!(
-        packages.iter().map(|p| p.signatures.len()).sum::<usize>(),
-        body.authorizations.len()
-    );
-    packages
-        .par_iter()
-        .map(
-            |Package {
-                 messages,
-                 signatures,
-                 verifying_keys,
-             }| {
-                ed25519_dalek::verify_batch(
-                    messages,
-                    signatures,
-                    verifying_keys,
-                )
-            },
-        )
-        .collect::<Result<(), SignatureError>>()?;
-    Ok(())
-}
-
 fn borsh_serialize_verifying_key<W>(
     vk: &VerifyingKey,
     writer: &mut W,
@@ -204,6 +83,88 @@ pub struct Authorization {
     #[borsh(serialize_with = "borsh_serialize_signature")]
     #[schema(value_type = String)]
     pub signature: Signature,
+}
+
+pub fn verify_authorized_transaction(
+    transaction: &AuthorizedTransaction,
+) -> Result<(), Error> {
+    let () = verify_orchard(&transaction.transaction)?;
+
+    let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
+    let messages: Vec<_> = std::iter::repeat_n(
+        tx_bytes_canonical.as_slice(),
+        transaction.authorizations.len(),
+    )
+    .collect();
+    let (verifying_keys, signatures): (Vec<VerifyingKey>, Vec<Signature>) =
+        transaction
+            .authorizations
+            .iter()
+            .map(
+                |Authorization {
+                     verifying_key,
+                     signature,
+                 }| (verifying_key, signature),
+            )
+            .unzip();
+    ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)?;
+    Ok(())
+}
+
+// Verify orchard authorization
+fn verify_orchard(transaction: &Transaction) -> Result<(), Error> {
+    if let Some(orchard_bundle) = &transaction.orchard_bundle {
+        let txid = transaction.txid();
+        let bvk = orchard_bundle.binding_validating_key();
+        let binding_sig = orchard_bundle.authorization().binding_signature();
+        let () = bvk.verify(txid.as_slice(), binding_sig)?;
+        let () = orchard_bundle.verify_proof()?;
+    };
+    Ok(())
+}
+
+pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
+    // TODO: batch orchard verifications
+    let () = body.transactions.par_iter().try_for_each(verify_orchard)?;
+    let verifications_required =
+        body.transactions.par_iter().map(|tx| tx.inputs.len()).sum();
+    match body.authorizations.len().cmp(&verifications_required) {
+        std::cmp::Ordering::Less => return Err(Error::NotEnoughAuthorizations),
+        std::cmp::Ordering::Equal => (),
+        std::cmp::Ordering::Greater => {
+            return Err(Error::TooManyAuthorizations);
+        }
+    }
+    if verifications_required == 0 {
+        return Ok(());
+    }
+    // pairs of serialized txs, and the number of inputs
+    let serialized_transactions_inputs: Vec<(Vec<u8>, usize)> = body
+        .transactions
+        .par_iter()
+        .map(|tx| Ok((borsh::to_vec(tx)?, tx.inputs.len())))
+        .collect::<Result<_, Error>>()?;
+    let messages =
+        serialized_transactions_inputs
+            .iter()
+            .flat_map(|(tx, n_inputs)| {
+                std::iter::repeat_n(tx.as_slice(), *n_inputs)
+            });
+    let pairs = body.authorizations.iter().zip(messages).collect::<Vec<_>>();
+    assert_eq!(pairs.len(), body.authorizations.len());
+    const CHUNK_SIZE: usize = 1 << 14;
+    pairs.par_chunks(CHUNK_SIZE).try_for_each(|chunk| {
+        let (signatures, verifying_keys, messages): (
+            Vec<Signature>,
+            Vec<VerifyingKey>,
+            Vec<&[u8]>,
+        ) = chunk
+            .iter()
+            .map(|(auth, msg)| (auth.signature, auth.verifying_key, msg))
+            .collect();
+        ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)
+    })?;
+    Ok(())
 }
 
 impl Authorization {
