@@ -11,6 +11,7 @@ use crate::types::{
     VERSION, Version, orchard::Nullifier,
 };
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(
     from(db::error::Delete, db::Error),
