@@ -102,13 +102,17 @@ fn connect_tip_(
     let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
     let orchard_frontier = if tracing::enabled!(tracing::Level::DEBUG) {
         let merkle_root = body.compute_merkle_root();
-        let height = state.try_get_height(rwtxn)?;
-        let orchard_frontier = state.connect_block(rwtxn, header, body)?;
+        let height = state.try_get_height(rwtxn).map_err(state::Error::from)?;
+        let orchard_frontier = state
+            .connect_block(rwtxn, header, body)
+            .map_err(state::Error::from)?;
         tracing::debug!(?height, %merkle_root, %block_hash,
                             "connected body");
         orchard_frontier
     } else {
-        state.connect_block(rwtxn, header, body)?
+        state
+            .connect_block(rwtxn, header, body)
+            .map_err(state::Error::from)?
     };
     if let Some(orchard_frontier) = orchard_frontier {
         let () = archive.put_orchard_frontier(
@@ -122,10 +126,7 @@ fn connect_tip_(
     let () = archive.put_header(rwtxn, header)?;
     let () = archive.put_body(rwtxn, block_hash, body)?;
     let () = archive.put_accumulator(rwtxn, block_hash, &accumulator)?;
-    for transaction in &body.transactions {
-        let () = mempool.delete(rwtxn, transaction.txid())?;
-    }
-    let () = mempool.regenerate_proofs(rwtxn, &accumulator)?;
+    let () = mempool.connect_block(rwtxn, &accumulator, body)?;
     Ok(())
 }
 
@@ -135,11 +136,16 @@ fn disconnect_tip_(
     mempool: &MemPool,
     state: &State,
 ) -> Result<(), Error> {
-    let tip_block_hash =
-        state.try_get_tip(rwtxn)?.ok_or(state::Error::NoTip)?;
+    let tip_block_hash = state
+        .try_get_tip(rwtxn)
+        .map_err(state::Error::from)?
+        .ok_or(state::Error::NoTip)?;
     let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
     let tip_body = archive.get_body(rwtxn, tip_block_hash)?;
-    let height = state.try_get_height(rwtxn)?.ok_or(state::Error::NoTip)?;
+    let height = state
+        .try_get_height(rwtxn)
+        .map_err(state::Error::from)?
+        .ok_or(state::Error::NoTip)?;
     let two_way_peg_data = {
         let last_applied_deposit_block = state
             .deposit_blocks
@@ -256,9 +262,11 @@ fn reorg_to_tip(
     new_tip: Tip,
 ) -> Result<bool, Error> {
     let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-    let tip_height = state.try_get_height(&rwtxn)?;
+    let tip_height =
+        state.try_get_height(&rwtxn).map_err(state::Error::from)?;
     let tip = state
-        .try_get_tip(&rwtxn)?
+        .try_get_tip(&rwtxn)
+        .map_err(state::Error::from)?
         .map(|tip_hash| {
             let bmm_verification =
                 archive.get_best_main_verification(&rwtxn, tip_hash)?;
@@ -340,7 +348,7 @@ fn reorg_to_tip(
         }
     }
     {
-        let tip_hash = state.try_get_tip(&rwtxn)?;
+        let tip_hash = state.try_get_tip(&rwtxn).map_err(state::Error::from)?;
         assert_eq!(tip_hash, common_ancestor);
     }
     let mut two_way_peg_data_batch: Vec<_> = {
@@ -387,7 +395,10 @@ fn reorg_to_tip(
             &body,
             &two_way_peg_data,
         )?;
-        let new_tip_hash = state.try_get_tip(&rwtxn)?.unwrap();
+        let new_tip_hash = state
+            .try_get_tip(&rwtxn)
+            .map_err(state::Error::from)?
+            .unwrap();
         let bmm_verification =
             archive.get_best_main_verification(&rwtxn, new_tip_hash)?;
         let new_tip = Tip {
@@ -403,7 +414,7 @@ fn reorg_to_tip(
         tracing::info!("synced to tip: {}", new_tip.block_hash);
         rwtxn = env.write_txn().map_err(EnvError::from)?;
     }
-    let tip = state.try_get_tip(&rwtxn)?;
+    let tip = state.try_get_tip(&rwtxn).map_err(state::Error::from)?;
     assert_eq!(tip, Some(new_tip.block_hash));
     rwtxn.commit().map_err(RwTxnError::from)?;
     tracing::info!("synced to tip: {}", new_tip.block_hash);
@@ -532,7 +543,8 @@ impl NetTask {
                     let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
                     let tip = ctxt
                         .state
-                        .try_get_tip(&rotxn)?
+                        .try_get_tip(&rotxn)
+                        .map_err(state::Error::from)?
                         .map(|tip_hash| {
                             let bmm_verification = ctxt
                                 .archive

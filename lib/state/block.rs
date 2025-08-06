@@ -43,11 +43,11 @@ pub fn validate(
     let mut coinbase_value = bitcoin::Amount::ZERO;
     let merkle_root = body.compute_merkle_root();
     if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
+        let err = error::InvalidBody {
             expected: merkle_root,
             computed: header.merkle_root,
         };
-        return Err(err);
+        return Err(Error::InvalidBody(err));
     }
     for (vout, output) in body.coinbase.iter().enumerate() {
         coinbase_value = coinbase_value
@@ -162,11 +162,11 @@ fn connect_transaction(
     transaction: &Transaction,
     accumulator_diff: &mut AccumulatorDiff,
     frontier: &mut orchard::Frontier,
-) -> Result<(), Error> {
+) -> Result<(), error::ConnectTransaction> {
     let txid = transaction.txid();
     for (vin, (outpoint, utxo_hash)) in transaction.inputs.iter().enumerate() {
         let spent_output =
-            state.utxos.try_get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
+            state.utxos.try_get(rwtxn, outpoint)?.ok_or(error::NoUtxo {
                 outpoint: *outpoint,
             })?;
         accumulator_diff.remove(utxo_hash.into());
@@ -205,22 +205,22 @@ pub fn connect(
     rwtxn: &mut RwTxn,
     header: &Header,
     body: &Body,
-) -> Result<Option<orchard::Frontier>, Error> {
+) -> Result<Option<orchard::Frontier>, error::ConnectBlock> {
     let tip_hash = state.try_get_tip(rwtxn)?;
     if tip_hash != header.prev_side_hash {
         let err = error::InvalidHeader::PrevSideHash {
             expected: tip_hash,
             received: header.prev_side_hash,
         };
-        return Err(Error::InvalidHeader(err));
+        return Err(error::ConnectBlock::InvalidHeader(err));
     }
     let merkle_root = body.compute_merkle_root();
     if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
+        let err = error::InvalidBody {
             expected: merkle_root,
             computed: header.merkle_root,
         };
-        return Err(err);
+        return Err(err.into());
     }
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
@@ -248,7 +248,11 @@ pub fn connect(
             transaction,
             &mut accumulator_diff,
             &mut frontier,
-        )?;
+        )
+        .map_err(|err| error::ConnectBlock::ConnectTransaction {
+            txid: transaction.txid(),
+            source: err,
+        })?;
     }
     let block_hash = header.hash();
     let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
@@ -304,9 +308,9 @@ fn disconnect_transaction(
             };
             accumulator_diff.remove((&pointed_output).into());
             if state.utxos.delete(rwtxn, &outpoint)? {
-                Ok(())
+                Ok::<_, Error>(())
             } else {
-                Err(Error::NoUtxo { outpoint })
+                Err(error::NoUtxo { outpoint }.into())
             }
         },
     )?;
@@ -347,11 +351,11 @@ pub fn disconnect_tip(
     }
     let merkle_root = body.compute_merkle_root();
     if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
+        let err = error::InvalidBody {
             expected: merkle_root,
             computed: header.merkle_root,
         };
-        return Err(err);
+        return Err(Error::InvalidBody(err));
     }
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     tracing::debug!("Got acc");
@@ -376,9 +380,9 @@ pub fn disconnect_tip(
             };
             accumulator_diff.remove((&pointed_output).into());
             if state.utxos.delete(rwtxn, &outpoint)? {
-                Ok(())
+                Ok::<_, Error>(())
             } else {
-                Err(Error::NoUtxo { outpoint })
+                Err(error::NoUtxo { outpoint }.into())
             }
         })?;
     let height = state

@@ -8,6 +8,15 @@ use crate::types::{
 };
 
 #[derive(Debug, Error)]
+#[error(
+    "invalid body: expected merkle root {expected}, but computed {computed}"
+)]
+pub struct InvalidBody {
+    pub expected: MerkleRoot,
+    pub computed: MerkleRoot,
+}
+
+#[derive(Debug, Error)]
 pub enum InvalidHeader {
     #[error("expected block hash {expected}, but computed {computed}")]
     BlockHash {
@@ -33,7 +42,7 @@ pub enum Orchard {
     #[error("Cannot append commitment to frontier: would exceed max depth")]
     AppendCommitment,
     #[error(transparent)]
-    Db(#[from] db::Error),
+    Db(#[from] Box<db::Error>),
     #[error("The empty anchor is only allowed if spends are disabled")]
     EmptyAnchor,
     #[error("Invalid anchor (`{anchor}`)")]
@@ -44,23 +53,84 @@ pub enum Orchard {
     NullifierDoubleSpent { nullifier: orchard::Nullifier },
 }
 
+impl From<db::Error> for Orchard {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("utxo {outpoint} doesn't exist")]
+pub struct NoUtxo {
+    pub outpoint: OutPoint,
+}
+
 #[derive(Debug, Error, Transitive)]
-#[transitive(from(db::Clear, db::Error))]
 #[transitive(from(db::Delete, db::Error))]
-#[transitive(from(db::Error, sneed::Error))]
-#[transitive(from(db::Get, db::Error))]
-#[transitive(from(db::Iter, db::Error))]
-#[transitive(from(db::IterInit, db::Error))]
-#[transitive(from(db::IterItem, db::Error))]
-#[transitive(from(db::Last, db::Error))]
-#[transitive(from(db::Len, db::Error))]
 #[transitive(from(db::Put, db::Error))]
 #[transitive(from(db::TryGet, db::Error))]
-#[transitive(from(env::CreateDb, env::Error))]
-#[transitive(from(env::Error, sneed::Error))]
-#[transitive(from(env::WriteTxn, env::Error))]
-#[transitive(from(rwtxn::Commit, rwtxn::Error))]
-#[transitive(from(rwtxn::Error, sneed::Error))]
+pub enum ConnectTransaction {
+    #[error(transparent)]
+    Db(#[from] Box<db::Error>),
+    #[error(transparent)]
+    NoUtxo(#[from] NoUtxo),
+    #[error("Orchard error")]
+    Orchard(#[from] Orchard),
+}
+
+impl From<db::Error> for ConnectTransaction {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
+}
+
+#[derive(Debug, Error, Transitive)]
+#[transitive(from(db::Get, db::Error))]
+#[transitive(from(db::Put, db::Error))]
+#[transitive(from(db::TryGet, db::Error))]
+pub enum ConnectBlock {
+    #[error("error connecting transaction (`{txid}`)")]
+    ConnectTransaction {
+        txid: Txid,
+        source: ConnectTransaction,
+    },
+    #[error(transparent)]
+    Db(#[from] Box<db::Error>),
+    #[error(transparent)]
+    InvalidBody(#[from] InvalidBody),
+    #[error("invalid header: {0}")]
+    InvalidHeader(InvalidHeader),
+    #[error("Orchard error")]
+    Orchard(#[from] Orchard),
+    #[error(transparent)]
+    Utreexo(#[from] UtreexoError),
+}
+
+impl From<db::Error> for ConnectBlock {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
+}
+
+#[derive(Debug, Error, Transitive)]
+#[transitive(
+    from(db::Clear, db::Error),
+    from(db::Delete, db::Error),
+    from(db::Error, sneed::Error),
+    from(db::Get, db::Error),
+    from(db::Iter, db::Error),
+    from(db::IterInit, db::Error),
+    from(db::IterItem, db::Error),
+    from(db::Last, db::Error),
+    from(db::Len, db::Error),
+    from(db::Put, db::Error),
+    from(db::TryGet, db::Error),
+    from(env::CreateDb, env::Error),
+    from(env::Error, sneed::Error),
+    from(env::WriteTxn, env::Error),
+    from(rwtxn::Commit, rwtxn::Error),
+    from(rwtxn::Error, sneed::Error)
+)]
 pub enum Error {
     #[error("failed to verify authorization")]
     AuthorizationError,
@@ -72,15 +142,12 @@ pub enum Error {
     BodyTooLarge,
     #[error(transparent)]
     BorshSerialize(borsh::io::Error),
+    #[error("failed to connect block")]
+    ConnectBlock(#[from] ConnectBlock),
     #[error(transparent)]
-    Db(#[from] sneed::Error),
-    #[error(
-        "invalid body: expected merkle root {expected}, but computed {computed}"
-    )]
-    InvalidBody {
-        expected: MerkleRoot,
-        computed: MerkleRoot,
-    },
+    Db(#[from] Box<sneed::Error>),
+    #[error(transparent)]
+    InvalidBody(InvalidBody),
     #[error("invalid header: {0}")]
     InvalidHeader(InvalidHeader),
     #[error("deposit block doesn't exist")]
@@ -93,8 +160,8 @@ pub enum Error {
     NoStxo { outpoint: OutPoint },
     #[error("value in is less than value out")]
     NotEnoughValueIn,
-    #[error("utxo {outpoint} doesn't exist")]
-    NoUtxo { outpoint: OutPoint },
+    #[error(transparent)]
+    NoUtxo(#[from] NoUtxo),
     #[error("Withdrawal bundle event block doesn't exist")]
     NoWithdrawalBundleEventBlock,
     #[error("Orchard error")]
@@ -122,4 +189,10 @@ pub enum Error {
     WrongPubKeyForAddress,
     #[error(transparent)]
     WithdrawalBundle(#[from] WithdrawalBundleError),
+}
+
+impl From<sneed::Error> for Error {
+    fn from(err: sneed::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
 }

@@ -935,7 +935,11 @@ impl Serialize for Anchor {
     where
         S: Serializer,
     {
-        Serialize::serialize(&self.0.to_bytes(), serializer)
+        if serializer.is_human_readable() {
+            hex::serde::serialize(self.0.to_bytes(), serializer)
+        } else {
+            Serialize::serialize(&self.0.to_bytes(), serializer)
+        }
     }
 }
 

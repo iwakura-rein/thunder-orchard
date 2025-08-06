@@ -158,12 +158,15 @@ impl State {
     pub fn try_get_tip(
         &self,
         rotxn: &RoTxn,
-    ) -> Result<Option<BlockHash>, Error> {
+    ) -> Result<Option<BlockHash>, db_error::TryGet> {
         let tip = self.tip.try_get(rotxn, &())?;
         Ok(tip)
     }
 
-    pub fn try_get_height(&self, rotxn: &RoTxn) -> Result<Option<u32>, Error> {
+    pub fn try_get_height(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<u32>, db_error::TryGet> {
         let height = self.height.try_get(rotxn, &())?;
         Ok(height)
     }
@@ -256,7 +259,7 @@ impl State {
         let mut spent_utxos = vec![];
         for (outpoint, _) in &transaction.inputs {
             let utxo =
-                self.utxos.try_get(txn, outpoint)?.ok_or(Error::NoUtxo {
+                self.utxos.try_get(txn, outpoint)?.ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             spent_utxos.push(utxo);
@@ -471,7 +474,7 @@ impl State {
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<Option<types::orchard::Frontier>, Error> {
+    ) -> Result<Option<types::orchard::Frontier>, error::ConnectBlock> {
         block::connect(self, rwtxn, header, body)
     }
 

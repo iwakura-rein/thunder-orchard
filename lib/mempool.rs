@@ -2,28 +2,60 @@ use std::collections::VecDeque;
 
 use fallible_iterator::FallibleIterator as _;
 use heed::types::SerdeBincode;
-use sneed::{
-    DatabaseUnique, EnvError, RoTxn, RwTxn, RwTxnError, UnitKey,
-    db::error::Error as DbError,
-};
+use sneed::{DatabaseUnique, RoTxn, RwTxn, RwTxnError, UnitKey, db, env};
+use thiserror::Error;
+use transitive::Transitive;
 
 use crate::types::{
-    Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError, VERSION,
-    Version,
+    Accumulator, AuthorizedTransaction, Body, OutPoint, Txid, UtreexoError,
+    VERSION, Version, orchard::Nullifier,
 };
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error, Transitive)]
+#[transitive(
+    from(db::error::Delete, db::Error),
+    from(db::error::Get, db::Error),
+    from(db::error::IterInit, db::Error),
+    from(db::error::IterItem, db::Error),
+    from(db::error::Put, db::Error),
+    from(db::error::TryGet, db::Error),
+    from(env::error::CreateDb, env::Error),
+    from(env::error::WriteTxn, env::Error)
+)]
 pub enum Error {
     #[error(transparent)]
-    Db(#[from] DbError),
+    Db(#[from] Box<db::Error>),
     #[error("Database env error")]
-    DbEnv(#[from] EnvError),
+    DbEnv(#[from] Box<env::Error>),
     #[error("Database write error")]
     DbWrite(#[from] RwTxnError),
+    #[error(
+        "can't add transaction (`{}`), nullifier (`{}`) already used by (`{}`)",
+        .new_txid,
+        .nullifier,
+        .old_txid,
+    )]
+    NullifierDoubleSpent {
+        new_txid: Txid,
+        nullifier: Nullifier,
+        old_txid: Txid,
+    },
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
-    #[error("can't add transaction, utxo double spent")]
-    UtxoDoubleSpent,
+    #[error("can't add transaction (`{txid}`), utxo double spent")]
+    UtxoDoubleSpent { txid: Txid },
+}
+
+impl From<db::Error> for Error {
+    fn from(err: db::Error) -> Self {
+        Self::Db(Box::new(err))
+    }
+}
+
+impl From<env::Error> for Error {
+    fn from(err: env::Error) -> Self {
+        Self::DbEnv(Box::new(err))
+    }
 }
 
 #[derive(Clone)]
@@ -31,93 +63,96 @@ pub struct MemPool {
     pub transactions:
         DatabaseUnique<SerdeBincode<Txid>, SerdeBincode<AuthorizedTransaction>>,
     pub spent_utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Txid>>,
+    pub used_nullifiers:
+        DatabaseUnique<SerdeBincode<Nullifier>, SerdeBincode<Txid>>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl MemPool {
-    pub const NUM_DBS: u32 = 3;
+    pub const NUM_DBS: u32 = 4;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        let mut rwtxn = env.write_txn()?;
         let transactions =
-            DatabaseUnique::create(env, &mut rwtxn, "transactions")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "transactions")?;
         let spent_utxos =
-            DatabaseUnique::create(env, &mut rwtxn, "spent_utxos")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "spent_utxos")?;
+        let used_nullifiers =
+            DatabaseUnique::create(env, &mut rwtxn, "used_nullifiers")?;
         let version =
-            DatabaseUnique::create(env, &mut rwtxn, "mempool_version")
-                .map_err(EnvError::from)?;
-        if version
-            .try_get(&rwtxn, &())
-            .map_err(DbError::from)?
-            .is_none()
-        {
-            version
-                .put(&mut rwtxn, &(), &*VERSION)
-                .map_err(DbError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "mempool_version")?;
+        if version.try_get(&rwtxn, &())?.is_none() {
+            version.put(&mut rwtxn, &(), &*VERSION)?;
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             transactions,
             spent_utxos,
+            used_nullifiers,
             _version: version,
         })
     }
 
     pub fn put(
         &self,
-        txn: &mut RwTxn,
+        rwtxn: &mut RwTxn,
         transaction: &AuthorizedTransaction,
     ) -> Result<(), Error> {
         let txid = transaction.transaction.txid();
+        if self.transactions.contains_key(rwtxn, &txid)? {
+            tracing::debug!(%txid, "transaction already in mempool");
+            return Ok(());
+        }
         tracing::debug!("adding transaction {txid} to mempool");
         for (outpoint, _) in &transaction.transaction.inputs {
-            if self
-                .spent_utxos
-                .try_get(txn, outpoint)
-                .map_err(DbError::from)?
-                .is_some()
-            {
-                return Err(Error::UtxoDoubleSpent);
+            if self.spent_utxos.try_get(rwtxn, outpoint)?.is_some() {
+                return Err(Error::UtxoDoubleSpent {
+                    txid: transaction.transaction.txid(),
+                });
             }
-            self.spent_utxos
-                .put(txn, outpoint, &txid)
-                .map_err(DbError::from)?;
+            self.spent_utxos.put(rwtxn, outpoint, &txid)?;
         }
-        self.transactions
-            .put(txn, &txid, transaction)
-            .map_err(DbError::from)?;
+        if let Some(orchard_bundle) = &transaction.transaction.orchard_bundle {
+            for nullifier in orchard_bundle.nullifiers() {
+                if let Some(old_txid) =
+                    self.used_nullifiers.try_get(rwtxn, nullifier)?
+                {
+                    let err = Error::NullifierDoubleSpent {
+                        new_txid: txid,
+                        nullifier: *nullifier,
+                        old_txid,
+                    };
+                    return Err(err);
+                }
+                self.used_nullifiers.put(rwtxn, nullifier, &txid)?;
+            }
+        }
+        self.transactions.put(rwtxn, &txid, transaction)?;
         Ok(())
     }
 
     pub fn delete(&self, rwtxn: &mut RwTxn, txid: Txid) -> Result<(), Error> {
         let mut pending_deletes = VecDeque::from([txid]);
         while let Some(txid) = pending_deletes.pop_front() {
-            if let Some(tx) = self
-                .transactions
-                .try_get(rwtxn, &txid)
-                .map_err(DbError::from)?
-            {
+            if let Some(tx) = self.transactions.try_get(rwtxn, &txid)? {
                 for (outpoint, _) in &tx.transaction.inputs {
-                    self.spent_utxos
-                        .delete(rwtxn, outpoint)
-                        .map_err(DbError::from)?;
+                    self.spent_utxos.delete(rwtxn, outpoint)?;
                 }
-                self.transactions
-                    .delete(rwtxn, &txid)
-                    .map_err(DbError::from)?;
+                self.transactions.delete(rwtxn, &txid)?;
                 for vout in 0..tx.transaction.outputs.len() {
                     let outpoint = OutPoint::Regular {
                         txid,
                         vout: vout as u32,
                     };
-                    if let Some(child_txid) = self
-                        .spent_utxos
-                        .try_get(rwtxn, &outpoint)
-                        .map_err(DbError::from)?
+                    if let Some(child_txid) =
+                        self.spent_utxos.try_get(rwtxn, &outpoint)?
                     {
                         pending_deletes.push_back(child_txid);
+                    }
+                }
+                if let Some(orchard_bundle) = tx.transaction.orchard_bundle {
+                    for nullifier in orchard_bundle.nullifiers() {
+                        self.used_nullifiers.delete(rwtxn, nullifier)?;
                     }
                 }
             }
@@ -131,12 +166,11 @@ impl MemPool {
         number: usize,
     ) -> Result<Vec<AuthorizedTransaction>, Error> {
         self.transactions
-            .iter(rotxn)
-            .map_err(DbError::from)?
+            .iter(rotxn)?
             .take(number)
             .map(|(_, transaction)| Ok(transaction))
             .collect()
-            .map_err(|err| DbError::from(err).into())
+            .map_err(Error::from)
     }
 
     pub fn take_all(
@@ -144,11 +178,10 @@ impl MemPool {
         rotxn: &RoTxn,
     ) -> Result<Vec<AuthorizedTransaction>, Error> {
         self.transactions
-            .iter(rotxn)
-            .map_err(DbError::from)?
+            .iter(rotxn)?
             .map(|(_, transaction)| Ok(transaction))
             .collect()
-            .map_err(|err| DbError::from(err).into())
+            .map_err(Error::from)
     }
 
     /// regenerate utreexo proofs for all txs in the mempool
@@ -157,15 +190,9 @@ impl MemPool {
         rwtxn: &mut RwTxn,
         accumulator: &Accumulator,
     ) -> Result<(), Error> {
-        let txids: Vec<_> = self
-            .transactions
-            .iter_keys(rwtxn)
-            .map_err(DbError::from)?
-            .collect()
-            .map_err(DbError::from)?;
+        let txids: Vec<_> = self.transactions.iter_keys(rwtxn)?.collect()?;
         for txid in txids {
-            let mut tx =
-                self.transactions.get(rwtxn, &txid).map_err(DbError::from)?;
+            let mut tx = self.transactions.get(rwtxn, &txid)?;
             let targets: Vec<_> = tx
                 .transaction
                 .inputs
@@ -173,10 +200,30 @@ impl MemPool {
                 .map(|(_, utxo_hash)| utxo_hash.into())
                 .collect();
             tx.transaction.proof = accumulator.prove(&targets)?;
-            self.transactions
-                .put(rwtxn, &txid, &tx)
-                .map_err(DbError::from)?;
+            self.transactions.put(rwtxn, &txid, &tx)?;
         }
         Ok(())
+    }
+
+    /// Remove conflicting txs and regenerate proofs after applying a block
+    pub fn connect_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        accumulator: &Accumulator,
+        body: &Body,
+    ) -> Result<(), Error> {
+        for tx in &body.transactions {
+            let () = self.delete(rwtxn, tx.txid())?;
+            if let Some(orchard_bundle) = &tx.orchard_bundle {
+                for nullifier in orchard_bundle.nullifiers() {
+                    if let Some(txid) =
+                        self.used_nullifiers.try_get(rwtxn, nullifier)?
+                    {
+                        let () = self.delete(rwtxn, txid)?;
+                    }
+                }
+            }
+        }
+        self.regenerate_proofs(rwtxn, accumulator)
     }
 }

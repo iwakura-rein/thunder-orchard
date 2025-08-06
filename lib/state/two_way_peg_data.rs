@@ -8,7 +8,7 @@ use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 use crate::{
     state::{
         Error, State, WITHDRAWAL_BUNDLE_FAILURE_GAP, WithdrawalBundleInfo,
-        rollback::RollBack,
+        error, rollback::RollBack,
     },
     types::{
         Accumulator, AccumulatorDiff, AggregatedWithdrawal,
@@ -663,9 +663,10 @@ fn disconnect_withdrawal_bundle_failed(
                     .put(rwtxn, outpoint, &spent_output)
                     .map_err(DbError::from)?;
                 if state.utxos.delete(rwtxn, outpoint).map_err(DbError::from)? {
-                    return Err(Error::NoUtxo {
+                    return Err(error::NoUtxo {
                         outpoint: *outpoint,
-                    });
+                    }
+                    .into());
                 };
                 let utxo_hash = hash(&PointedOutput {
                     outpoint: *outpoint,
@@ -757,7 +758,7 @@ fn disconnect_event(
                 .delete(rwtxn, &outpoint)
                 .map_err(DbError::from)?
             {
-                return Err(Error::NoUtxo { outpoint });
+                return Err(error::NoUtxo { outpoint }.into());
             }
             let utxo_hash = hash(&PointedOutput { outpoint, output });
             accumulator_diff.remove(utxo_hash.into());

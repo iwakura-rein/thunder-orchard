@@ -216,12 +216,15 @@ where
 
     pub fn try_get_height(&self) -> Result<Option<u32>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        Ok(self.state.try_get_height(&rotxn)?)
+        Ok(self
+            .state
+            .try_get_height(&rotxn)
+            .map_err(state::Error::from)?)
     }
 
     pub fn try_get_best_hash(&self) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        Ok(self.state.try_get_tip(&rotxn)?)
+        Ok(self.state.try_get_tip(&rotxn).map_err(state::Error::from)?)
     }
 
     pub fn submit_transaction(
@@ -292,7 +295,7 @@ where
         &self,
         rotxn: &RoTxn,
     ) -> Result<Option<BlockHash>, Error> {
-        let tip = self.state.try_get_tip(rotxn)?;
+        let tip = self.state.try_get_tip(rotxn).map_err(state::Error::from)?;
         Ok(tip)
     }
 
@@ -343,10 +346,16 @@ where
         height: u32,
     ) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let Some(tip) = self.state.try_get_tip(&rotxn)? else {
+        let Some(tip) =
+            self.state.try_get_tip(&rotxn).map_err(state::Error::from)?
+        else {
             return Ok(None);
         };
-        let Some(tip_height) = self.state.try_get_height(&rotxn)? else {
+        let Some(tip_height) = self
+            .state
+            .try_get_height(&rotxn)
+            .map_err(state::Error::from)?
+        else {
             return Ok(None);
         };
         if tip_height >= height {
@@ -569,7 +578,8 @@ where
         // Check that ancestor bodies exist, and store body
         {
             let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-            let tip = self.state.try_get_tip(&rotxn)?;
+            let tip =
+                self.state.try_get_tip(&rotxn).map_err(state::Error::from)?;
             let common_ancestor = if let Some(tip) = tip {
                 self.archive.last_common_ancestor(&rotxn, tip, block_hash)?
             } else {
