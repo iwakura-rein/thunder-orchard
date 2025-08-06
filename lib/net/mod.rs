@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, hash_map},
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::Arc,
 };
 
@@ -18,11 +18,13 @@ use tracing::instrument;
 use crate::{
     archive::Archive,
     state::State,
-    types::{AuthorizedTransaction, THIS_SIDECHAIN, VERSION, Version},
+    types::{AuthorizedTransaction, Network, THIS_SIDECHAIN, VERSION, Version},
 };
 
+pub mod error;
 mod peer;
 
+pub use error::Error;
 pub(crate) use peer::error::mailbox::Error as PeerConnectionMailboxError;
 use peer::{
     Connection, ConnectionContext as PeerConnectionCtxt,
@@ -34,60 +36,6 @@ pub use peer::{
     PeerStateId, Request as PeerRequest, ResponseMessage as PeerResponse,
     message as peer_message,
 };
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("accept error")]
-    AcceptError,
-    #[error("already connected to peer at {0}")]
-    AlreadyConnected(SocketAddr),
-    #[error("bincode error")]
-    Bincode(#[from] bincode::Error),
-    #[error("connect error")]
-    Connect(#[from] quinn::ConnectError),
-    #[error("connection error (remote address: {remote_address})")]
-    Connection {
-        #[source]
-        error: quinn::ConnectionError,
-        remote_address: SocketAddr,
-    },
-    #[error(transparent)]
-    Db(#[from] DbError),
-    #[error("Database env error")]
-    DbEnv(#[from] sneed::env::Error),
-    #[error("Database write error")]
-    DbWrite(#[from] sneed::rwtxn::Error),
-    #[error("quinn error")]
-    Io(#[from] std::io::Error),
-    #[error("peer connection not found for {0}")]
-    MissingPeerConnection(SocketAddr),
-    /// Unspecified peer IP addresses cannot be connected to.
-    /// `0.0.0.0` is one example of an "unspecified" IP.
-    #[error("unspecified peer ip address (cannot connect to '{0}')")]
-    UnspecfiedPeerIP(IpAddr),
-    #[error(transparent)]
-    NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
-    #[error("peer connection")]
-    PeerConnection(#[source] Box<PeerConnectionError>),
-    #[error("quinn rustls error")]
-    QuinnRustls(#[from] quinn::crypto::rustls::Error),
-    #[error("rcgen")]
-    RcGen(#[from] rcgen::Error),
-    #[error("read to end error")]
-    ReadToEnd(#[from] quinn::ReadToEndError),
-    #[error("send datagram error")]
-    SendDatagram(#[from] quinn::SendDatagramError),
-    #[error("server endpoint closed")]
-    ServerEndpointClosed,
-    #[error("write error")]
-    Write(#[from] quinn::WriteError),
-}
-
-impl From<PeerConnectionError> for Error {
-    fn from(err: PeerConnectionError) -> Self {
-        Self::PeerConnection(Box::new(err))
-    }
-}
 
 /// Dummy certificate verifier that treats any certificate as valid.
 /// NOTE, such verification is vulnerable to MITM attacks, but convenient for testing.
@@ -203,6 +151,26 @@ pub fn make_server_endpoint(
 pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
 
+const SIGNET_SEED_NODE_ADDRS: &[SocketAddr] = {
+    const SIGNET_MINING_SERVER: SocketAddr = SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 105, 148, 135)),
+        4000 + THIS_SIDECHAIN as u16,
+    );
+    // thunder.bip300.xyz
+    const BIP300_XYZ: SocketAddr = SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(95, 217, 243, 12)),
+        4000 + THIS_SIDECHAIN as u16,
+    );
+    &[SIGNET_MINING_SERVER, BIP300_XYZ]
+};
+
+const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
+    match network {
+        Network::Signet => SIGNET_SEED_NODE_ADDRS,
+        Network::Regtest => &[],
+    }
+}
+
 // Keep track of peer state
 // Exchange metadata
 // Bulk download
@@ -233,13 +201,13 @@ impl Net {
         &self,
         addr: SocketAddr,
         peer_connection_handle: PeerConnectionHandle,
-    ) -> Result<(), Error> {
+    ) -> Result<(), error::AlreadyConnected> {
         tracing::trace!(%addr, "add active peer: starting");
         let mut active_peers_write = self.active_peers.write();
         match active_peers_write.entry(addr) {
             hash_map::Entry::Occupied(_) => {
                 tracing::error!(%addr, "add active peer: already connected");
-                Err(Error::AlreadyConnected(addr))
+                Err(error::AlreadyConnected(addr))
             }
             hash_map::Entry::Vacant(active_peer_entry) => {
                 active_peer_entry.insert(peer_connection_handle);
@@ -292,7 +260,7 @@ impl Net {
     ) -> Result<(), Error> {
         if self.active_peers.read().contains_key(&addr) {
             tracing::error!("connect peer: already connected");
-            return Err(Error::AlreadyConnected(addr));
+            return Err(error::AlreadyConnected(addr).into());
         }
 
         // This check happens within Quinn with a
@@ -336,42 +304,28 @@ impl Net {
     pub fn new(
         env: &sneed::Env,
         archive: Archive,
+        network: Network,
         state: State,
         bind_addr: SocketAddr,
     ) -> Result<(Self, PeerInfoRx), Error> {
         let (server, _) = make_server_endpoint(bind_addr)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-        let known_peers = match DatabaseUnique::open(env, &rwtxn, "known_peers")
-            .map_err(EnvError::from)?
-        {
-            Some(known_peers) => known_peers,
-            None => {
-                let known_peers =
-                    DatabaseUnique::create(env, &mut rwtxn, "known_peers")
-                        .map_err(EnvError::from)?;
-                const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(
-                        172, 105, 148, 135,
-                    )),
-                    4000 + THIS_SIDECHAIN as u16,
-                );
-                known_peers
-                    .put(&mut rwtxn, &SEED_NODE_ADDR, &())
-                    .map_err(DbError::from)?;
-                known_peers
-            }
-        };
-        let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")
-            .map_err(EnvError::from)?;
-        if version
-            .try_get(&rwtxn, &())
-            .map_err(DbError::from)?
-            .is_none()
-        {
-            version
-                .put(&mut rwtxn, &(), &*VERSION)
-                .map_err(DbError::from)?;
+        let mut rwtxn = env.write_txn()?;
+        let known_peers =
+            match DatabaseUnique::open(env, &rwtxn, "known_peers")? {
+                Some(known_peers) => known_peers,
+                None => {
+                    let known_peers =
+                        DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
+                    for seed_node_addr in seed_node_addrs(network) {
+                        known_peers.put(&mut rwtxn, seed_node_addr, &())?;
+                    }
+                    known_peers
+                }
+            };
+        let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")?;
+        if version.try_get(&rwtxn, &())?.is_none() {
+            version.put(&mut rwtxn, &(), &*VERSION)?;
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
@@ -406,10 +360,9 @@ impl Net {
                     tracing::warn!(
                         %addr, "new net: known peer with invalid remote address, removing"
                     );
-                    let mut tx = env.write_txn().map_err(EnvError::from)?;
-                    net.known_peers.delete(&mut tx, &peer_addr).map_err(DbError::from)?;
-                    tx.commit().map_err(RwTxnError::from)?;
-
+                    let mut rwtxn = env.write_txn()?;
+                    net.known_peers.delete(&mut rwtxn, &peer_addr).map_err(DbError::from)?;
+                    rwtxn.commit()?;
                     tracing::info!(
                         %addr,
                         "new net: removed known peer with invalid remote address"
@@ -432,7 +385,7 @@ impl Net {
     pub async fn accept_incoming(
         &self,
         env: sneed::Env,
-    ) -> Result<Option<SocketAddr>, Error> {
+    ) -> Result<Option<SocketAddr>, error::AcceptConnection> {
         tracing::debug!(
             "accept incoming: listening for connections on `{}`",
             self.server
@@ -445,16 +398,17 @@ impl Net {
                 let remote_address = conn.remote_address();
                 tracing::trace!("accepting connection from {remote_address}",);
 
-                let raw_conn =
-                    conn.await.map_err(|error| Error::Connection {
+                let raw_conn = conn.await.map_err(|error| {
+                    error::AcceptConnection::Connection {
                         error,
                         remote_address,
-                    })?;
+                    }
+                })?;
                 Connection::from(raw_conn)
             }
             None => {
                 tracing::debug!("server endpoint closed");
-                return Err(Error::ServerEndpointClosed);
+                return Err(error::AcceptConnection::ServerEndpointClosed);
             }
         };
         let addr = connection.addr();

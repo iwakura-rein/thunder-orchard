@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::{Arg, Parser};
-use thunder_orchard::types::THIS_SIDECHAIN;
+use thunder_orchard::types::{Network, THIS_SIDECHAIN};
 
 use crate::util::saturating_pred_level;
 
@@ -131,6 +131,9 @@ pub(super) struct Cli {
     /// Socket address to use for P2P networking
     #[arg(default_value_t = DEFAULT_NET_ADDR, long, short)]
     net_addr: SocketAddr,
+    /// Set the network. Setting this may affect other defaults.
+    #[arg(default_value_t, long, value_enum)]
+    network: Network,
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
@@ -147,6 +150,7 @@ pub struct Config {
     pub mainchain_grpc_url: url::Url,
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
+    pub network: Network,
     pub rpc_addr: SocketAddr,
 }
 
@@ -182,6 +186,7 @@ impl Cli {
             mainchain_grpc_url: self.mainchain_grpc_url,
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
+            network: self.network,
             rpc_addr: self.rpc_addr,
         })
     }
