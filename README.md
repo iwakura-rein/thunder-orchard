@@ -1,3 +1,6 @@
+Hey iwakura-rein, could you please go into Settings and allow Issues on your fork?
+
+
 # Thunder-Orchard
 
 ## Building
