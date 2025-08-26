@@ -168,7 +168,7 @@ pub enum Error {
     #[error("failed to connect block")]
     ConnectBlock(#[from] ConnectBlock),
     #[error(transparent)]
-    Db(#[from] Box<sneed::Error>),
+    Db(Box<sneed::Error>),
     #[error(transparent)]
     InvalidBody(InvalidBody),
     #[error("invalid header: {0}")]

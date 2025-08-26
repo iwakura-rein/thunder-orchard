@@ -49,6 +49,17 @@ pub trait Rpc {
         fee_sats: u64,
     ) -> RpcResult<bitcoin::Txid>;
 
+    /// Delete peer from known_peers DB.
+    /// Connections to the peer are not terminated.
+    #[method(name = "forget_peer")]
+    async fn forget_peer(
+        &self,
+        #[open_api_method_arg(schema(
+            PartialSchema = "thunder_orchard_schema::SocketAddr"
+        ))]
+        addr: SocketAddr,
+    ) -> RpcResult<()>;
+
     /// Format a deposit address
     #[method(name = "format_deposit_address")]
     async fn format_deposit_address(
