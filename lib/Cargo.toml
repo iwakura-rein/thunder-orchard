@@ -25,7 +25,7 @@ clap = { workspace = true, features = ["derive"], optional = true }
 ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
 fallible-iterator = { workspace = true }
 fatality = "0.1.1"
-futures = "0.3.30"
+futures = { workspace = true, features = ["alloc"] }
 halo2_proofs = { version = "0.3.0", default-features = false }
 hashlink = { version = "0.10.0", features = ["serde_impl"] }
 heed = "0.21.0"
@@ -46,10 +46,10 @@ rustreexo = { workspace = true, features = ["with-serde"] }
 semver = { version = "1.0.25", features = ["serde"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
-serde_with = { version = "3.4.0", features = ["hex"] }
+serde_with = { version = "3.4.0", features = ["alloc", "hex", "macros"] }
 shardtree = "0.6.1"
 sneed = { version = "0.0.15", features = ["observe"] }
-strum = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tiny-bip39 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
