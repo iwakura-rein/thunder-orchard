@@ -24,8 +24,8 @@ pub use address::{Address, ShieldedAddress, TransparentAddress};
 pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
-    GetValue, InPoint, OutPoint, Output, PointedOutput, SpentOutput,
-    Transaction,
+    GetValue, InPoint, OutPoint, OutPointKey, Output, PointedOutput,
+    SpentOutput, Transaction,
 };
 
 pub const THIS_SIDECHAIN: u8 = 98;
@@ -312,7 +312,7 @@ impl PartialOrd for AggregatedWithdrawal {
 /// Removing twice will cause one deletion.
 /// Inserting and then removing will have no overall effect,
 /// but a second removal will still cause a deletion.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct AccumulatorDiff(
     /// `true` indicates insertion, `false` indicates removal.

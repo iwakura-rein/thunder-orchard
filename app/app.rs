@@ -25,6 +25,7 @@ use tonic_health::{
 
 use crate::cli::Config;
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, thiserror::Error, transitive::Transitive)]
 #[transitive(
     from(thunder_orchard::archive::Error, node::Error),

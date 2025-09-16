@@ -9,6 +9,7 @@ use std::{
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, future::BoxFuture};
+use heed::EnvFlags;
 use sneed::{DbError, Env, EnvError, RoTxn, RwTxnError, env};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
@@ -21,7 +22,7 @@ use crate::{
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
-        Network, OutPoint, Output, SpentOutput, Tip, Transaction,
+        Network, OutPoint, OutPointKey, Output, SpentOutput, Tip, Transaction,
         TransparentAddress, Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
@@ -146,6 +147,14 @@ where
                         + MemPool::NUM_DBS
                         + Net::NUM_DBS,
                 );
+            // Apply fast flags consistent with the benchmark setup
+            let fast_flags = EnvFlags::WRITE_MAP
+                | EnvFlags::MAP_ASYNC
+                | EnvFlags::NO_SYNC
+                | EnvFlags::NO_META_SYNC
+                | EnvFlags::NO_READ_AHEAD
+                | EnvFlags::NO_TLS;
+            unsafe { env_open_opts.flags(fast_flags) };
             unsafe { Env::open(&env_open_opts, &env_path) }
                 .map_err(EnvError::from)?
         };
@@ -267,10 +276,11 @@ where
     ) -> Result<Vec<(OutPoint, SpentOutput)>, Error> {
         let mut spent = vec![];
         for outpoint in outpoints {
+            let key = OutPointKey::from_outpoint(outpoint);
             if let Some(output) = self
                 .state
                 .stxos
-                .try_get(rotxn, outpoint)
+                .try_get(rotxn, &key)
                 .map_err(DbError::from)?
             {
                 spent.push((*outpoint, output));

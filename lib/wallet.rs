@@ -15,6 +15,7 @@ use heed::{
     types::{Bytes, SerdeBincode, U8, U32},
 };
 use parking_lot::RwLock;
+use rayon::prelude::*;
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
@@ -27,7 +28,6 @@ use crate::{
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError, BlockHash,
         Body, Header, PointedOutput, Txid, UtreexoError, VERSION, Version,
-        hash,
     },
     util::Watchable,
 };
@@ -550,7 +550,7 @@ impl Wallet {
             .map_err(DbError::from)?
             .collect()
             .map_err(DbError::from)?;
-        utxos.sort_unstable_by_key(|(_, output)| output.get_value());
+        utxos.par_sort_unstable_by_key(|(_, output)| output.get_value());
 
         let mut selected = HashMap::new();
         let mut total = bitcoin::Amount::ZERO;
@@ -602,7 +602,9 @@ impl Wallet {
         let inputs: Vec<_> = coins
             .into_iter()
             .map(|(outpoint, output)| {
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                let utxo_hash = crate::types::hashes::hash_with_scratch_buffer(
+                    &PointedOutput { outpoint, output },
+                );
                 (outpoint, utxo_hash)
             })
             .collect();
@@ -648,7 +650,9 @@ impl Wallet {
         let inputs: Vec<_> = coins
             .into_iter()
             .map(|(outpoint, output)| {
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                let utxo_hash = crate::types::hashes::hash_with_scratch_buffer(
+                    &PointedOutput { outpoint, output },
+                );
                 (outpoint, utxo_hash)
             })
             .collect();
@@ -756,7 +760,9 @@ impl Wallet {
         let inputs: Vec<_> = coins
             .into_iter()
             .map(|(outpoint, output)| {
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                let utxo_hash = crate::types::hashes::hash_with_scratch_buffer(
+                    &PointedOutput { outpoint, output },
+                );
                 (outpoint, utxo_hash)
             })
             .collect();

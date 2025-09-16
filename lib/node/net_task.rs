@@ -99,19 +99,19 @@ fn connect_tip_(
     two_way_peg_data: &mainchain::TwoWayPegData,
 ) -> Result<(), Error> {
     let block_hash = header.hash();
-    let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
+    // Use optimised prevalidation + connect path to avoid recomputation
     let orchard_frontier = if tracing::enabled!(tracing::Level::DEBUG) {
         let merkle_root = body.compute_merkle_root();
         let height = state.try_get_height(rwtxn).map_err(state::Error::from)?;
         let orchard_frontier = state
-            .connect_block(rwtxn, header, body)
+            .apply_block(rwtxn, header, body)
             .map_err(state::Error::from)?;
         tracing::debug!(?height, %merkle_root, %block_hash,
                             "connected body");
         orchard_frontier
     } else {
         state
-            .connect_block(rwtxn, header, body)
+            .apply_block(rwtxn, header, body)
             .map_err(state::Error::from)?
     };
     if let Some(orchard_frontier) = orchard_frontier {

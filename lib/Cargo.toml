@@ -13,13 +13,14 @@ protox = "0.7.1"
 tonic-build = "0.12.3"
 
 [dependencies]
+ahash = "0.8"
 anyhow = { workspace = true, features = ["backtrace"] }
 async-lock = "3.4.0"
 bincode = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
 blake3 = "1.4.1"
 borsh = { version = "1.3.1", features = ["derive"] }
-bytemuck = "1.22.0"
+bytemuck = { version = "1.22.0", features = ["extern_crate_alloc"] }
 bytes = "1.4.0"
 clap = { workspace = true, features = ["derive"], optional = true }
 ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
@@ -27,11 +28,13 @@ fallible-iterator = { workspace = true }
 fatality = "0.1.1"
 futures = "0.3.30"
 halo2_proofs = { version = "0.3.0", default-features = false }
+hashbrown = "0.15"
 hashlink = { version = "0.10.0", features = ["serde_impl"] }
 heed = "0.21.0"
 hex = { version = "0.4.3", features = ["serde"] }
 incrementalmerkletree = "0.8.2"
 jsonrpsee = { workspace = true }
+smallvec = { version = "1.13.2", features = ["write"] }
 nonempty = { version = "0.11.0", features = ["serialize"] }
 orchard = "0.11.0"
 parking_lot = { workspace = true, features = ["arc_lock"]}

@@ -138,6 +138,7 @@ impl utoipa::ToSchema for MerkleRoot {
 }
 
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Copy,
@@ -223,6 +224,26 @@ impl std::fmt::Display for M6id {
     }
 }
 
+impl borsh::BorshSerialize for M6id {
+    fn serialize<W: borsh::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> borsh::io::Result<()> {
+        let bytes: &[u8; 32] = self.0.as_ref();
+        borsh::BorshSerialize::serialize(bytes, writer)
+    }
+}
+
+impl borsh::BorshDeserialize for M6id {
+    fn deserialize_reader<R: borsh::io::Read>(
+        reader: &mut R,
+    ) -> borsh::io::Result<Self> {
+        let bytes: [u8; 32] =
+            borsh::BorshDeserialize::deserialize_reader(reader)?;
+        Ok(Self(bitcoin::Txid::from_byte_array(bytes)))
+    }
+}
+
 pub fn hash<T>(data: &T) -> Hash
 where
     T: BorshSerialize,
@@ -230,4 +251,28 @@ where
     let data_serialized = borsh::to_vec(data)
         .expect("failed to serialize with borsh to compute a hash");
     blake3::hash(&data_serialized).into()
+}
+
+/// Optimized hash function that reuses a thread-local scratch buffer
+/// to avoid heap allocations for each hash operation. This is beneficial
+/// when hashing many small objects in hot paths.
+pub fn hash_with_scratch_buffer<T>(data: &T) -> Hash
+where
+    T: BorshSerialize + ?Sized,
+{
+    use smallvec::SmallVec;
+
+    thread_local! {
+        // Start with 256 bytes on the stack; grow as needed
+        static SCRATCH: std::cell::RefCell<SmallVec<[u8; 256]>> =
+            std::cell::RefCell::new(SmallVec::new());
+    }
+
+    SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        borsh::to_writer(&mut *buf, data)
+            .expect("failed to serialize with borsh to compute a hash");
+        blake3::hash(&buf).into()
+    })
 }

@@ -32,6 +32,7 @@ pub enum InvalidHeader {
     },
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Get, db::Error))]
@@ -65,6 +66,7 @@ pub struct NoUtxo {
     pub outpoint: OutPoint,
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Put, db::Error))]
@@ -76,6 +78,8 @@ pub enum ConnectTransaction {
     NoUtxo(#[from] NoUtxo),
     #[error("Orchard error")]
     Orchard(#[from] Orchard),
+    #[error("Utreexo proof verification failed")]
+    UtreexoProofFailed,
 }
 
 impl From<db::Error> for ConnectTransaction {
@@ -84,7 +88,9 @@ impl From<db::Error> for ConnectTransaction {
     }
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
+#[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Get, db::Error))]
 #[transitive(from(db::Put, db::Error))]
 #[transitive(from(db::TryGet, db::Error))]
@@ -104,6 +110,22 @@ pub enum ConnectBlock {
     Orchard(#[from] Orchard),
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
+    #[error("failed to verify authorization")]
+    AuthorizationError,
+    #[error("total fees less than coinbase value")]
+    NotEnoughFees,
+    #[error("wrong public key for address")]
+    WrongPubKeyForAddress,
+    #[error("Computed Utreexo roots do not match the header roots")]
+    UtreexoRootsMismatch,
+    #[error("too many sigops")]
+    TooManySigops,
+    #[error("body too large")]
+    BodyTooLarge,
+    #[error("utxo double spent")]
+    UtxoDoubleSpent,
+    #[error("other error: {0}")]
+    Other(Box<crate::state::Error>),
 }
 
 impl From<db::Error> for ConnectBlock {
@@ -112,6 +134,7 @@ impl From<db::Error> for ConnectBlock {
     }
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(
     from(db::Clear, db::Error),
