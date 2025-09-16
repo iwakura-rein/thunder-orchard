@@ -523,6 +523,21 @@ where
         self.net.get_active_peers()
     }
 
+    pub async fn request_mainchain_ancestor_infos(
+        &self,
+        block_hash: bitcoin::BlockHash,
+    ) -> Result<bool, Error> {
+        let mainchain_task::Response::AncestorInfos(_, res): mainchain_task::Response = self
+            .mainchain_task
+            .request_oneshot(mainchain_task::Request::AncestorInfos(
+                block_hash,
+            ))
+            .map_err(|_| Error::SendMainchainTaskRequest)?
+            .await
+            .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
+        res.map_err(Error::MainchainAncestors)
+    }
+
     /// Attempt to submit a block.
     /// Returns `Ok(true)` if the block was accepted successfully as the new tip.
     /// Returns `Ok(false)` if the block could not be submitted for some reason,
