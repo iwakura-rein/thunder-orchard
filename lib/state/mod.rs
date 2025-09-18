@@ -280,10 +280,10 @@ impl State {
         for (outpoint, _) in &transaction.inputs {
             let utxo = self
                 .utxos
-                .try_get(txn, &OutPointKey::from_outpoint(outpoint))?
+                .try_get(txn, &OutPointKey::from(outpoint))?
                 .ok_or(error::NoUtxo {
-                    outpoint: *outpoint,
-                })?;
+                outpoint: *outpoint,
+            })?;
             spent_utxos.push(utxo);
         }
         Ok(FilledTransaction {

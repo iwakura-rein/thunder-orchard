@@ -79,7 +79,7 @@ pub fn validate(
     let mut all_input_keys = Vec::with_capacity(total_inputs);
     for filled_transaction in &filled_transactions {
         for (outpoint, _) in &filled_transaction.transaction.inputs {
-            all_input_keys.push(OutPointKey::from_outpoint(outpoint));
+            all_input_keys.push(OutPointKey::from(outpoint));
         }
     }
 
@@ -207,7 +207,7 @@ pub fn prevalidate(
     let mut all_input_keys = Vec::with_capacity(total_inputs);
     for filled_transaction in &filled_transactions {
         for (outpoint, _) in &filled_transaction.transaction.inputs {
-            all_input_keys.push(OutPointKey::from_outpoint(outpoint));
+            all_input_keys.push(OutPointKey::from(outpoint));
         }
     }
 
@@ -312,7 +312,7 @@ pub fn connect_prevalidated(
             merkle_root,
             vout: vout as u32,
         };
-        let key = OutPointKey::from_outpoint(&outpoint);
+        let key = OutPointKey::from(outpoint);
         utxo_puts.push((key, output.clone()));
     }
 
@@ -325,7 +325,7 @@ pub fn connect_prevalidated(
             filled_transaction.transaction.inputs.iter().enumerate()
         {
             let spent_utxo = &filled_transaction.spent_utxos[vin];
-            let key = OutPointKey::from_outpoint(outpoint);
+            let key = OutPointKey::from(outpoint);
             utxo_deletes.push(key);
             stxo_puts.push((
                 key,
@@ -347,7 +347,7 @@ pub fn connect_prevalidated(
                 txid,
                 vout: vout as u32,
             };
-            let key = OutPointKey::from_outpoint(&outpoint);
+            let key = OutPointKey::from(outpoint);
             utxo_puts.push((key, output.clone()));
         }
 
@@ -438,14 +438,12 @@ fn connect_transaction(
     for (vin, (outpoint, utxo_hash)) in transaction.inputs.iter().enumerate() {
         let spent_output = state
             .utxos
-            .try_get(rwtxn, &OutPointKey::from_outpoint(outpoint))?
+            .try_get(rwtxn, &OutPointKey::from(outpoint))?
             .ok_or(error::NoUtxo {
                 outpoint: *outpoint,
             })?;
         accumulator_diff.remove(utxo_hash.into());
-        state
-            .utxos
-            .delete(rwtxn, &OutPointKey::from_outpoint(outpoint))?;
+        state.utxos.delete(rwtxn, &OutPointKey::from(outpoint))?;
         let spent_output = SpentOutput {
             output: spent_output,
             inpoint: InPoint::Regular {
@@ -453,11 +451,9 @@ fn connect_transaction(
                 vin: vin as u32,
             },
         };
-        state.stxos.put(
-            rwtxn,
-            &OutPointKey::from_outpoint(outpoint),
-            &spent_output,
-        )?;
+        state
+            .stxos
+            .put(rwtxn, &OutPointKey::from(outpoint), &spent_output)?;
     }
     for (vout, output) in transaction.outputs.iter().enumerate() {
         let outpoint = OutPoint::Regular {
@@ -469,7 +465,7 @@ fn connect_transaction(
             output: output.clone(),
         };
         accumulator_diff.insert((&pointed_output).into());
-        let key = OutPointKey::from_outpoint(&outpoint);
+        let key = OutPointKey::from(outpoint);
         state.utxos.put(rwtxn, &key, output)?;
     }
     if let Some(orchard_bundle) = transaction.orchard_bundle.as_ref() {
@@ -519,7 +515,7 @@ pub fn connect(
             output: output.clone(),
         };
         accumulator_diff.insert((&pointed_output).into());
-        let key = OutPointKey::from_outpoint(&outpoint);
+        let key = OutPointKey::from(outpoint);
         state.utxos.put(rwtxn, &key, output)?;
     }
     for transaction in &body.transactions {
@@ -588,10 +584,7 @@ fn disconnect_transaction(
                 output: output.clone(),
             };
             accumulator_diff.remove((&pointed_output).into());
-            if state
-                .utxos
-                .delete(rwtxn, &OutPointKey::from_outpoint(&outpoint))?
-            {
+            if state.utxos.delete(rwtxn, &OutPointKey::from(outpoint))? {
                 Ok::<_, Error>(())
             } else {
                 Err(error::NoUtxo { outpoint }.into())
@@ -604,17 +597,14 @@ fn disconnect_transaction(
         .iter()
         .rev()
         .try_for_each(|(outpoint, utxo_hash)| {
-            if let Some(spent_output) = state
-                .stxos
-                .try_get(rwtxn, &OutPointKey::from_outpoint(outpoint))?
+            if let Some(spent_output) =
+                state.stxos.try_get(rwtxn, &OutPointKey::from(outpoint))?
             {
                 accumulator_diff.insert(utxo_hash.into());
-                state
-                    .stxos
-                    .delete(rwtxn, &OutPointKey::from_outpoint(outpoint))?;
+                state.stxos.delete(rwtxn, &OutPointKey::from(outpoint))?;
                 state.utxos.put(
                     rwtxn,
-                    &OutPointKey::from_outpoint(outpoint),
+                    &OutPointKey::from(outpoint),
                     &spent_output.output,
                 )?;
                 Ok(())
@@ -672,10 +662,7 @@ pub fn disconnect_tip(
                 output: output.clone(),
             };
             accumulator_diff.remove((&pointed_output).into());
-            if state
-                .utxos
-                .delete(rwtxn, &OutPointKey::from_outpoint(&outpoint))?
-            {
+            if state.utxos.delete(rwtxn, &OutPointKey::from(outpoint))? {
                 Ok::<_, Error>(())
             } else {
                 Err(error::NoUtxo { outpoint }.into())
