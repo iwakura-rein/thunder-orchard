@@ -12,7 +12,8 @@ use crate::net::PeerConnectionError;
 pub struct AlreadyConnected(pub SocketAddr);
 
 /// Another connection can be accepted after a non-fatal error
-#[derive(transitive::Transitive)]
+#[allow(clippy::duplicated_attributes)]
+#[derive(Transitive)]
 #[fatality(splitable)]
 #[transitive(
     from(sneed::db::error::Put, sneed::DbError),

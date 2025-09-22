@@ -32,6 +32,7 @@ pub enum InvalidHeader {
     },
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Get, db::Error))]
@@ -65,6 +66,7 @@ pub struct NoUtxo {
     pub outpoint: OutPoint,
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Put, db::Error))]
@@ -84,6 +86,7 @@ impl From<db::Error> for ConnectTransaction {
     }
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Get, db::Error))]
 #[transitive(from(db::Put, db::Error))]
@@ -112,6 +115,7 @@ impl From<db::Error> for ConnectBlock {
     }
 }
 
+#[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(
     from(db::Clear, db::Error),
@@ -145,7 +149,7 @@ pub enum Error {
     #[error("failed to connect block")]
     ConnectBlock(#[from] ConnectBlock),
     #[error(transparent)]
-    Db(#[from] Box<sneed::Error>),
+    Db(Box<sneed::Error>),
     #[error(transparent)]
     InvalidBody(InvalidBody),
     #[error("invalid header: {0}")]

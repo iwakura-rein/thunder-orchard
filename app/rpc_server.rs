@@ -68,6 +68,13 @@ impl RpcServer for RpcServerImpl {
         self.app.node.connect_peer(addr).map_err(custom_err)
     }
 
+    async fn forget_peer(&self, addr: SocketAddr) -> RpcResult<()> {
+        match self.app.node.forget_peer(&addr) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(custom_err(err)),
+        }
+    }
+
     async fn format_deposit_address(
         &self,
         address: TransparentAddress,
