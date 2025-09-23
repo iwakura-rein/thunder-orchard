@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, io::Cursor};
 
 use bitcoin::amount::CheckedSum;
-use borsh::BorshSerialize;
+use borsh::{self, BorshDeserialize, BorshSerialize};
 use educe::Educe;
+use heed::{BoxedError, BytesDecode, BytesEncode};
 use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
@@ -13,7 +14,7 @@ use crate::{
     authorization::Authorization,
     types::{
         AmountOverflowError, Hash, M6id, MerkleRoot, TransparentAddress, Txid,
-        hash,
+        hash, hash_with_scratch_buffer,
         orchard::{self, BundleAuthorization},
     },
 };
@@ -23,19 +24,35 @@ pub trait GetValue {
 }
 
 fn borsh_serialize_bitcoin_outpoint<W>(
-    block_hash: &bitcoin::OutPoint,
+    outpoint: &bitcoin::OutPoint,
     writer: &mut W,
 ) -> borsh::io::Result<()>
 where
     W: borsh::io::Write,
 {
-    let bitcoin::OutPoint { txid, vout } = block_hash;
+    let bitcoin::OutPoint { txid, vout } = outpoint;
     let txid_bytes: &[u8; 32] = txid.as_ref();
     borsh::BorshSerialize::serialize(&(txid_bytes, vout), writer)
 }
 
+fn borsh_deserialize_bitcoin_outpoint<R>(
+    reader: &mut R,
+) -> borsh::io::Result<bitcoin::OutPoint>
+where
+    R: borsh::io::Read,
+{
+    use bitcoin::hashes::Hash as BitcoinHash;
+    let (txid_bytes, vout): ([u8; 32], u32) =
+        <([u8; 32], u32) as BorshDeserialize>::deserialize_reader(reader)?;
+    Ok(bitcoin::OutPoint {
+        txid: bitcoin::Txid::from_byte_array(txid_bytes),
+        vout,
+    })
+}
+
 #[derive(
     BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Debug,
@@ -62,7 +79,10 @@ pub enum OutPoint {
     // Created by mainchain deposits.
     #[schema(value_type = crate::types::schema::BitcoinOutPoint)]
     Deposit(
-        #[borsh(serialize_with = "borsh_serialize_bitcoin_outpoint")]
+        #[borsh(
+            serialize_with = "borsh_serialize_bitcoin_outpoint",
+            deserialize_with = "borsh_deserialize_bitcoin_outpoint"
+        )]
         bitcoin::OutPoint,
     ),
 }
@@ -81,8 +101,162 @@ impl std::fmt::Display for OutPoint {
     }
 }
 
+const OUTPOINT_KEY_SIZE: usize = 37;
+
+/// Fixed-width key for OutPoint based on its canonical Borsh encoding.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct OutPointKey([u8; OUTPOINT_KEY_SIZE]);
+
+impl OutPointKey {
+    /// Get the raw key bytes
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8; OUTPOINT_KEY_SIZE] {
+        &self.0
+    }
+}
+
+impl From<OutPoint> for OutPointKey {
+    #[inline]
+    fn from(op: OutPoint) -> Self {
+        let mut key = [0u8; OUTPOINT_KEY_SIZE];
+        let mut cursor = Cursor::new(&mut key[..]);
+        BorshSerialize::serialize(&op, &mut cursor)
+            .expect("serializing OutPoint into key buffer should never fail");
+        debug_assert_eq!(cursor.position() as usize, OUTPOINT_KEY_SIZE);
+        Self(key)
+    }
+}
+
+impl From<&OutPoint> for OutPointKey {
+    #[inline]
+    fn from(op: &OutPoint) -> Self {
+        <Self as From<OutPoint>>::from(*op)
+    }
+}
+
+impl From<OutPointKey> for OutPoint {
+    #[inline]
+    fn from(key: OutPointKey) -> Self {
+        let mut cursor = Cursor::new(&key.0[..]);
+        OutPoint::deserialize_reader(&mut cursor)
+            .expect("deserializing OutPointKey should never fail")
+    }
+}
+
+impl From<&OutPointKey> for OutPoint {
+    #[inline]
+    fn from(key: &OutPointKey) -> Self {
+        <Self as From<OutPointKey>>::from(*key)
+    }
+}
+
+impl Ord for OutPointKey {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for OutPointKey {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl AsRef<[u8]> for OutPointKey {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+// Database key encoding traits for direct LMDB usage
+impl<'a> BytesEncode<'a> for OutPointKey {
+    type EItem = OutPointKey;
+
+    #[inline]
+    fn bytes_encode(
+        item: &'a Self::EItem,
+    ) -> Result<std::borrow::Cow<'a, [u8]>, BoxedError> {
+        Ok(std::borrow::Cow::Borrowed(item.as_ref()))
+    }
+}
+
+impl<'a> BytesDecode<'a> for OutPointKey {
+    type DItem = OutPointKey;
+
+    #[inline]
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
+        if bytes.len() != OUTPOINT_KEY_SIZE {
+            return Err(format!(
+                "OutPointKey must be exactly {OUTPOINT_KEY_SIZE} bytes"
+            )
+            .into());
+        }
+        let mut key = [0u8; OUTPOINT_KEY_SIZE];
+        key.copy_from_slice(bytes);
+        let mut cursor = Cursor::new(&key[..]);
+        let _ = OutPoint::deserialize_reader(&mut cursor)
+            .map_err(|err| -> BoxedError { Box::new(err) })?;
+        Ok(OutPointKey(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OUTPOINT_KEY_SIZE, OutPoint, OutPointKey};
+
+    #[test]
+    fn check_outpoint_key_size() -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use bitcoin::hashes::Hash as BitcoinHash;
+
+        let variants = [
+            OutPoint::Regular {
+                txid: Default::default(),
+                vout: u32::MAX,
+            },
+            OutPoint::Coinbase {
+                merkle_root: Default::default(),
+                vout: u32::MAX,
+            },
+            OutPoint::Deposit(bitcoin::OutPoint {
+                txid: bitcoin::Txid::from_byte_array([0; 32]),
+                vout: u32::MAX,
+            }),
+        ];
+
+        for op in variants {
+            let serialized = borsh::to_vec(&op)?;
+            ensure!(
+                serialized.len() == OUTPOINT_KEY_SIZE,
+                "unexpected serialized size: {}",
+                serialized.len()
+            );
+
+            let key = OutPointKey::from(op);
+            let decoded = OutPoint::from(key);
+            ensure!(decoded == op);
+        }
+
+        Ok(())
+    }
+}
+
 /// Reference to a tx input.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Serialize,
+)]
 pub enum InPoint {
     /// Transaction input
     Regular {
@@ -94,31 +268,6 @@ pub enum InPoint {
     Withdrawal {
         m6id: M6id,
     },
-}
-
-fn borsh_serialize_bitcoin_amount<W>(
-    bitcoin_amount: &bitcoin::Amount,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    borsh::BorshSerialize::serialize(&bitcoin_amount.to_sat(), writer)
-}
-
-fn borsh_serialize_bitcoin_address<V, W>(
-    bitcoin_address: &bitcoin::Address<V>,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    V: bitcoin::address::NetworkValidation,
-    W: borsh::io::Write,
-{
-    let spk = bitcoin_address
-        .as_unchecked()
-        .assume_checked_ref()
-        .script_pubkey();
-    borsh::BorshSerialize::serialize(spk.as_bytes(), writer)
 }
 
 mod content {
@@ -163,20 +312,146 @@ mod content {
         serde_with::FromInto<HumanReadableRepr>,
     >;
 
-    #[derive(borsh::BorshSerialize, Clone, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Eq, PartialEq)]
     pub enum Content {
-        Value(
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_amount")]
-            bitcoin::Amount,
-        ),
+        Value(bitcoin::Amount),
         Withdrawal {
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_amount")]
             value: bitcoin::Amount,
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_amount")]
             main_fee: bitcoin::Amount,
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_address")]
             main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         },
+    }
+
+    impl borsh::BorshSerialize for Content {
+        fn serialize<W: borsh::io::Write>(
+            &self,
+            writer: &mut W,
+        ) -> borsh::io::Result<()> {
+            match self {
+                Content::Value(amount) => {
+                    borsh::BorshSerialize::serialize(&0u8, writer)?;
+                    borsh::BorshSerialize::serialize(&amount.to_sat(), writer)
+                }
+                Content::Withdrawal {
+                    value,
+                    main_fee,
+                    main_address,
+                } => {
+                    borsh::BorshSerialize::serialize(&1u8, writer)?;
+                    borsh::BorshSerialize::serialize(&value.to_sat(), writer)?;
+                    borsh::BorshSerialize::serialize(
+                        &main_fee.to_sat(),
+                        writer,
+                    )?;
+                    // Serialize address as script bytes
+                    let script = main_address
+                        .as_unchecked()
+                        .assume_checked_ref()
+                        .script_pubkey();
+                    borsh::BorshSerialize::serialize(&script.as_bytes(), writer)
+                }
+            }
+        }
+    }
+
+    impl borsh::BorshDeserialize for Content {
+        fn deserialize(buf: &mut &[u8]) -> borsh::io::Result<Self> {
+            let variant: u8 = borsh::BorshDeserialize::deserialize(buf)?;
+            match variant {
+                0 => {
+                    let sats: u64 = borsh::BorshDeserialize::deserialize(buf)?;
+                    Ok(Content::Value(bitcoin::Amount::from_sat(sats)))
+                }
+                1 => {
+                    let value_sats: u64 =
+                        borsh::BorshDeserialize::deserialize(buf)?;
+                    let main_fee_sats: u64 =
+                        borsh::BorshDeserialize::deserialize(buf)?;
+                    let script_bytes: Vec<u8> =
+                        borsh::BorshDeserialize::deserialize(buf)?;
+
+                    let script = bitcoin::ScriptBuf::from_bytes(script_bytes);
+                    let checked_address = bitcoin::Address::from_script(
+                        &script,
+                        bitcoin::Network::Bitcoin,
+                    )
+                    .map_err(|e| {
+                        borsh::io::Error::new(
+                            borsh::io::ErrorKind::InvalidData,
+                            e,
+                        )
+                    })?;
+                    let address = checked_address.as_unchecked().clone();
+
+                    Ok(Content::Withdrawal {
+                        value: bitcoin::Amount::from_sat(value_sats),
+                        main_fee: bitcoin::Amount::from_sat(main_fee_sats),
+                        main_address: address,
+                    })
+                }
+                _ => Err(borsh::io::Error::new(
+                    borsh::io::ErrorKind::InvalidData,
+                    format!("Invalid Content variant: {}", variant),
+                )),
+            }
+        }
+
+        fn deserialize_reader<R: borsh::io::Read>(
+            reader: &mut R,
+        ) -> borsh::io::Result<Self> {
+            let mut variant_buf = [0u8; 1];
+            reader.read_exact(&mut variant_buf)?;
+            let variant = variant_buf[0];
+
+            match variant {
+                0 => {
+                    let mut sats_buf = [0u8; 8];
+                    reader.read_exact(&mut sats_buf)?;
+                    let sats = u64::from_le_bytes(sats_buf);
+                    Ok(Content::Value(bitcoin::Amount::from_sat(sats)))
+                }
+                1 => {
+                    let mut value_buf = [0u8; 8];
+                    reader.read_exact(&mut value_buf)?;
+                    let value_sats = u64::from_le_bytes(value_buf);
+
+                    let mut fee_buf = [0u8; 8];
+                    reader.read_exact(&mut fee_buf)?;
+                    let main_fee_sats = u64::from_le_bytes(fee_buf);
+
+                    // Read script length first
+                    let mut len_buf = [0u8; 4];
+                    reader.read_exact(&mut len_buf)?;
+                    let script_len = u32::from_le_bytes(len_buf) as usize;
+
+                    let mut script_bytes = vec![0u8; script_len];
+                    reader.read_exact(&mut script_bytes)?;
+
+                    let script = bitcoin::ScriptBuf::from_bytes(script_bytes);
+                    let checked_address = bitcoin::Address::from_script(
+                        &script,
+                        bitcoin::Network::Bitcoin,
+                    )
+                    .map_err(|e| {
+                        borsh::io::Error::new(
+                            borsh::io::ErrorKind::InvalidData,
+                            e,
+                        )
+                    })?;
+                    let address = checked_address.as_unchecked().clone();
+
+                    Ok(Content::Withdrawal {
+                        value: bitcoin::Amount::from_sat(value_sats),
+                        main_fee: bitcoin::Amount::from_sat(main_fee_sats),
+                        main_address: address,
+                    })
+                }
+                _ => Err(borsh::io::Error::new(
+                    borsh::io::ErrorKind::InvalidData,
+                    format!("Invalid Content variant: {}", variant),
+                )),
+            }
+        }
     }
 
     impl Content {
@@ -307,6 +582,7 @@ mod content {
 pub use content::Content;
 
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Debug,
@@ -385,24 +661,35 @@ where
     Auth: BundleAuthorization,
 {
     pub fn txid(&self) -> Txid {
+        use smallvec::SmallVec;
+        thread_local! {
+            static SCRATCH: std::cell::RefCell<SmallVec<[u8; 512]>> =
+                std::cell::RefCell::new(SmallVec::new());
+        }
         let Self {
             inputs,
             proof: _,
             outputs,
             orchard_bundle,
         } = self;
-        let canonical_bytes: Vec<u8> = {
-            || {
-                let mut bytes = borsh::to_vec(inputs)?;
-                BorshSerialize::serialize(&outputs, &mut bytes)?;
-                if let Some(orchard_bundle) = orchard_bundle {
-                    orchard_bundle.borsh_serialize_without_auth(&mut bytes)?;
-                }
-                std::io::Result::Ok(bytes)
+        let hash = SCRATCH.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            buf.clear();
+            // Inputs
+            borsh::to_writer(&mut *buf, inputs)
+                .expect("failed to serialize with borsh to compute a hash");
+            // Outputs
+            BorshSerialize::serialize(&outputs, &mut *buf)
+                .expect("failed to serialize with borsh to compute a hash");
+            // Orchard bundle without auth
+            if let Some(orchard_bundle) = orchard_bundle {
+                orchard_bundle
+                    .borsh_serialize_without_auth(&mut *buf)
+                    .expect("failed to serialize with borsh to compute a hash");
             }
-        }()
-        .expect("failed to serialize with borsh to compute a hash");
-        Txid(blake3::hash(&canonical_bytes).into())
+            blake3::hash(&buf).into()
+        });
+        Txid(hash)
     }
 }
 
@@ -436,7 +723,16 @@ where
 }
 
 /// Representation of a spent output
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+)]
 pub struct SpentOutput {
     pub output: Output,
     pub inpoint: InPoint,
@@ -539,7 +835,7 @@ impl Body {
 
     pub fn compute_merkle_root(&self) -> MerkleRoot {
         // FIXME: Compute actual merkle root instead of just a hash.
-        hash(&(&self.coinbase, &self.transactions)).into()
+        hash_with_scratch_buffer(&(&self.coinbase, &self.transactions)).into()
     }
 
     // Modifies the memforest, without checking tx proofs

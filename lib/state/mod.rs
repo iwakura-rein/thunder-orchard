@@ -12,15 +12,16 @@ use sneed::{
 };
 
 use crate::{
-    authorization::Authorization,
     types::{
         self, Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetValue,
-        Header, InPoint, M6id, OutPoint, Output, PointedOutput, SpentOutput,
-        Transaction, TransparentAddress, VERSION, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey, Output,
+        PointedOutput, SpentOutput, Transaction, TransparentAddress, VERSION,
+        Version, WithdrawalBundle, WithdrawalBundleStatus,
+        proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
+    wallet::Authorization,
 };
 
 mod block;
@@ -34,6 +35,17 @@ pub use orchard::Orchard;
 use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
+
+/// Prevalidated block data containing computed values from validation
+/// to avoid redundant computation during connection
+pub struct PrevalidatedBlock {
+    pub filled_transactions: Vec<FilledTransaction>,
+    pub computed_merkle_root: MerkleRoot,
+    pub total_fees: bitcoin::Amount,
+    pub coinbase_value: bitcoin::Amount,
+    pub next_height: u32, // Precomputed next height to avoid DB read in write txn
+    pub accumulator_diff: types::AccumulatorDiff,
+}
 
 /// Information we have regarding a withdrawal bundle
 #[derive(Debug, Deserialize, Serialize)]
@@ -64,9 +76,8 @@ pub struct State {
     tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
     /// Current height
     height: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
-    pub utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    pub stxos:
-        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    pub utxos: DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
+    pub stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
     /// Pending withdrawal bundle and block height
     pub pending_withdrawal_bundle:
         DatabaseUnique<UnitKey, SerdeBincode<(WithdrawalBundle, u32)>>,
@@ -175,7 +186,13 @@ impl State {
         &self,
         rotxn: &RoTxn,
     ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
-        let utxos = self.utxos.iter(rotxn)?.collect()?;
+        let utxos = self
+            .utxos
+            .iter(rotxn)?
+            .map(|(outpoint_key, output)| {
+                Ok((OutPoint::from(outpoint_key), output))
+            })
+            .collect()?;
         Ok(utxos)
     }
 
@@ -188,6 +205,9 @@ impl State {
             .utxos
             .iter(rotxn)?
             .filter(|(_, output)| Ok(addresses.contains(&output.address)))
+            .map(|(outpoint_key, output)| {
+                Ok((OutPoint::from(outpoint_key), output))
+            })
             .collect()?;
         Ok(utxos)
     }
@@ -258,10 +278,12 @@ impl State {
     ) -> Result<FilledTransaction, Error> {
         let mut spent_utxos = vec![];
         for (outpoint, _) in &transaction.inputs {
-            let utxo =
-                self.utxos.try_get(txn, outpoint)?.ok_or(error::NoUtxo {
-                    outpoint: *outpoint,
-                })?;
+            let utxo = self
+                .utxos
+                .try_get(txn, &OutPointKey::from(outpoint))?
+                .ok_or(error::NoUtxo {
+                outpoint: *outpoint,
+            })?;
             spent_utxos.push(utxo);
         }
         Ok(FilledTransaction {
@@ -423,7 +445,7 @@ impl State {
             .iter(rotxn)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint, output)| {
-                if let OutPoint::Deposit(_) = outpoint {
+                if let OutPoint::Deposit(_) = OutPoint::from(outpoint) {
                     total_deposit_utxo_value = total_deposit_utxo_value
                         .checked_add(output.get_value())
                         .ok_or(AmountOverflowError)?;
@@ -436,7 +458,7 @@ impl State {
             .iter(rotxn)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint, spent_output)| {
-                if let OutPoint::Deposit(_) = outpoint {
+                if let OutPoint::Deposit(_) = OutPoint::from(outpoint) {
                     total_deposit_stxo_value = total_deposit_stxo_value
                         .checked_add(spent_output.output.get_value())
                         .ok_or(AmountOverflowError)?;
@@ -476,6 +498,62 @@ impl State {
         body: &Body,
     ) -> Result<Option<types::orchard::Frontier>, error::ConnectBlock> {
         block::connect(self, rwtxn, header, body)
+    }
+
+    pub fn prevalidate_block(
+        &self,
+        rotxn: &RoTxn,
+        header: &Header,
+        body: &Body,
+    ) -> Result<PrevalidatedBlock, Error> {
+        block::prevalidate(self, rotxn, header, body)
+    }
+
+    pub fn connect_prevalidated_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+        body: &Body,
+        prevalidated: PrevalidatedBlock,
+    ) -> Result<Option<types::orchard::Frontier>, error::ConnectBlock> {
+        block::connect_prevalidated(self, rwtxn, header, body, prevalidated)
+    }
+
+    pub fn apply_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+        body: &Body,
+    ) -> Result<Option<types::orchard::Frontier>, error::ConnectBlock> {
+        let prevalidated = self
+            .prevalidate_block(rwtxn, header, body)
+            .map_err(|err| match err {
+                Error::InvalidHeader(h) => {
+                    error::ConnectBlock::InvalidHeader(h)
+                }
+                Error::TooManySigops => error::ConnectBlock::TooManySigops,
+                Error::BodyTooLarge => error::ConnectBlock::BodyTooLarge,
+                Error::InvalidBody(b) => error::ConnectBlock::InvalidBody(b),
+                Error::UtxoDoubleSpent => error::ConnectBlock::UtxoDoubleSpent,
+                Error::UtreexoProofFailed { txid } => {
+                    error::ConnectBlock::ConnectTransaction {
+                        txid,
+                        source: error::ConnectTransaction::UtreexoProofFailed,
+                    }
+                }
+                Error::NotEnoughFees => error::ConnectBlock::NotEnoughFees,
+                Error::WrongPubKeyForAddress => {
+                    error::ConnectBlock::WrongPubKeyForAddress
+                }
+                Error::AuthorizationError => {
+                    error::ConnectBlock::AuthorizationError
+                }
+                Error::UtreexoRootsMismatch => {
+                    error::ConnectBlock::UtreexoRootsMismatch
+                }
+                other => error::ConnectBlock::Other(Box::new(other)),
+            })?;
+        self.connect_prevalidated_block(rwtxn, header, body, prevalidated)
     }
 
     pub fn disconnect_tip(
