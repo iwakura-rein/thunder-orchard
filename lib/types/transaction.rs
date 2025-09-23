@@ -115,27 +115,22 @@ impl OutPointKey {
     }
 }
 
-#[inline]
-fn serialize_outpoint(outpoint: &OutPoint) -> [u8; OUTPOINT_KEY_SIZE] {
-    let mut key = [0u8; OUTPOINT_KEY_SIZE];
-    let mut cursor = Cursor::new(&mut key[..]);
-    BorshSerialize::serialize(outpoint, &mut cursor)
-        .expect("serializing OutPoint into key buffer should never fail");
-    debug_assert_eq!(cursor.position() as usize, OUTPOINT_KEY_SIZE);
-    key
-}
-
 impl From<OutPoint> for OutPointKey {
     #[inline]
     fn from(op: OutPoint) -> Self {
-        Self(serialize_outpoint(&op))
+        let mut key = [0u8; OUTPOINT_KEY_SIZE];
+        let mut cursor = Cursor::new(&mut key[..]);
+        BorshSerialize::serialize(&op, &mut cursor)
+            .expect("serializing OutPoint into key buffer should never fail");
+        debug_assert_eq!(cursor.position() as usize, OUTPOINT_KEY_SIZE);
+        Self(key)
     }
 }
 
 impl From<&OutPoint> for OutPointKey {
     #[inline]
     fn from(op: &OutPoint) -> Self {
-        Self(serialize_outpoint(op))
+        <Self as From<OutPoint>>::from(*op)
     }
 }
 
@@ -151,9 +146,7 @@ impl From<OutPointKey> for OutPoint {
 impl From<&OutPointKey> for OutPoint {
     #[inline]
     fn from(key: &OutPointKey) -> Self {
-        let mut cursor = Cursor::new(&key.0[..]);
-        OutPoint::deserialize_reader(&mut cursor)
-            .expect("deserializing OutPointKey should never fail")
+        <Self as From<OutPointKey>>::from(*key)
     }
 }
 
