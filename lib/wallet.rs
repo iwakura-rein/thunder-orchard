@@ -15,7 +15,7 @@ use heed::{
     types::{Bytes, SerdeBincode, U8, U32},
 };
 use parking_lot::RwLock;
-use rayon::prelude::*;
+use rayon::prelude::ParallelSliceMut;
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
