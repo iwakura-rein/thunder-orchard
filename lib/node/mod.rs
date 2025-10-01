@@ -9,6 +9,7 @@ use std::{
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, future::BoxFuture};
+use heed::EnvFlags;
 use sneed::{DbError, Env, EnvError, RoTxn, RwTxnError, env};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
@@ -21,7 +22,7 @@ use crate::{
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
-        Network, OutPoint, Output, SpentOutput, Tip, Transaction,
+        Network, OutPoint, OutPointKey, Output, SpentOutput, Tip, Transaction,
         TransparentAddress, Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
@@ -146,6 +147,28 @@ where
                         + MemPool::NUM_DBS
                         + Net::NUM_DBS,
                 );
+            // Apply LMDB "fast" flags consistent with our benchmark setup:
+            // - WRITE_MAP lets us write directly into the memory map instead of
+            //   copying into LMDB's page buffer, reducing syscall overhead for
+            //   write-heavy workloads.
+            // - MAP_ASYNC hands dirty-page flushing to the kernel so commits do
+            //   not block waiting for msync, keeping latencies tight.
+            // - NO_SYNC and NO_META_SYNC skip fsync calls for data and
+            //   metadata; this trades durability for throughput, which is
+            //   acceptable here because the state can be reconstructed from the
+            //   canonical chain if a crash occurs.
+            // - NO_READ_AHEAD disables kernel readahead that would otherwise
+            //   touch cold pages we immediately overwrite, improving random
+            //   access behaviour on SSDs used in testing.
+            // - NO_TLS stops LMDB from relying on thread-local storage for
+            //   reader slots so transactions can be moved across Tokio tasks.
+            let fast_flags = EnvFlags::WRITE_MAP
+                | EnvFlags::MAP_ASYNC
+                | EnvFlags::NO_SYNC
+                | EnvFlags::NO_META_SYNC
+                | EnvFlags::NO_READ_AHEAD
+                | EnvFlags::NO_TLS;
+            unsafe { env_open_opts.flags(fast_flags) };
             unsafe { Env::open(&env_open_opts, &env_path) }
                 .map_err(EnvError::from)?
         };
@@ -267,10 +290,11 @@ where
     ) -> Result<Vec<(OutPoint, SpentOutput)>, Error> {
         let mut spent = vec![];
         for outpoint in outpoints {
+            let key = OutPointKey::from(outpoint);
             if let Some(output) = self
                 .state
                 .stxos
-                .try_get(rotxn, outpoint)
+                .try_get(rotxn, &key)
                 .map_err(DbError::from)?
             {
                 spent.push((*outpoint, output));

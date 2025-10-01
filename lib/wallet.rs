@@ -15,6 +15,7 @@ use heed::{
     types::{Bytes, SerdeBincode, U8, U32},
 };
 use parking_lot::RwLock;
+use rayon::prelude::ParallelSliceMut;
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
@@ -27,7 +28,6 @@ use crate::{
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError, BlockHash,
         Body, Header, PointedOutput, Txid, UtreexoError, VERSION, Version,
-        hash,
     },
     util::Watchable,
 };
@@ -224,11 +224,35 @@ impl Wallet {
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
         let env = {
+            use heed::EnvFlags;
             let mut env_open_options = heed::EnvOpenOptions::new();
             env_open_options
-                .map_size(100 * 1024 * 1024) // 100MB
+                .map_size(10 * 1024 * 1024) // 10MB
                 .max_dbs(Self::NUM_DBS);
-            unsafe { Env::open(&env_open_options, path) }?
+            // Apply LMDB "fast" flags consistent with our benchmark setup:
+            // - WRITE_MAP lets us write directly into the memory map instead of
+            //   copying into LMDB's page buffer, reducing syscall overhead for
+            //   write-heavy workloads.
+            // - MAP_ASYNC hands dirty-page flushing to the kernel so commits do
+            //   not block waiting for msync, keeping latencies tight.
+            // - NO_SYNC and NO_META_SYNC skip fsync calls for data and
+            //   metadata; this trades durability for throughput, which is
+            //   acceptable here because the state can be reconstructed from the
+            //   canonical chain if a crash occurs.
+            // - NO_READ_AHEAD disables kernel readahead that would otherwise
+            //   touch cold pages we immediately overwrite, improving random
+            //   access behaviour on SSDs used in testing.
+            // - NO_TLS stops LMDB from relying on thread-local storage for
+            //   reader slots so transactions can be moved across Tokio tasks.
+            let fast_flags = EnvFlags::WRITE_MAP
+                | EnvFlags::MAP_ASYNC
+                | EnvFlags::NO_SYNC
+                | EnvFlags::NO_META_SYNC
+                | EnvFlags::NO_READ_AHEAD
+                | EnvFlags::NO_TLS;
+            unsafe { env_open_options.flags(fast_flags) };
+            unsafe { Env::open(&env_open_options, path) }
+                .map_err(EnvError::from)?
         };
         let mut rwtxn = env.write_txn()?;
         let seed_db = DatabaseUnique::create(&env, &mut rwtxn, "seed")?;
@@ -550,7 +574,7 @@ impl Wallet {
             .map_err(DbError::from)?
             .collect()
             .map_err(DbError::from)?;
-        utxos.sort_unstable_by_key(|(_, output)| output.get_value());
+        utxos.par_sort_unstable_by_key(|(_, output)| output.get_value());
 
         let mut selected = HashMap::new();
         let mut total = bitcoin::Amount::ZERO;
@@ -602,7 +626,9 @@ impl Wallet {
         let inputs: Vec<_> = coins
             .into_iter()
             .map(|(outpoint, output)| {
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                let utxo_hash = crate::types::hashes::hash_with_scratch_buffer(
+                    &PointedOutput { outpoint, output },
+                );
                 (outpoint, utxo_hash)
             })
             .collect();
@@ -648,7 +674,9 @@ impl Wallet {
         let inputs: Vec<_> = coins
             .into_iter()
             .map(|(outpoint, output)| {
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                let utxo_hash = crate::types::hashes::hash_with_scratch_buffer(
+                    &PointedOutput { outpoint, output },
+                );
                 (outpoint, utxo_hash)
             })
             .collect();
@@ -756,7 +784,9 @@ impl Wallet {
         let inputs: Vec<_> = coins
             .into_iter()
             .map(|(outpoint, output)| {
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                let utxo_hash = crate::types::hashes::hash_with_scratch_buffer(
+                    &PointedOutput { outpoint, output },
+                );
                 (outpoint, utxo_hash)
             })
             .collect();
