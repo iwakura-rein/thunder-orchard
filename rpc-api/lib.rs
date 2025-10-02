@@ -132,6 +132,12 @@ pub trait Rpc {
     #[method(name = "get_wallet_utxos")]
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
 
+    /// Get unconfirmed wallet UTXOs
+    #[method(name = "get_wallet_utxos_unconfirmed")]
+    async fn get_wallet_utxos_unconfirmed(
+        &self,
+    ) -> RpcResult<Vec<PointedOutput>>;
+
     /// Get the current block count
     #[method(name = "getblockcount")]
     async fn getblockcount(&self) -> RpcResult<u32>;

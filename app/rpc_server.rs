@@ -218,6 +218,25 @@ impl RpcServer for RpcServerImpl {
         Ok(utxos)
     }
 
+    async fn get_wallet_utxos_unconfirmed(
+        &self,
+    ) -> RpcResult<Vec<PointedOutput>> {
+        let utxos = {
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
+            self.app
+                .wallet
+                .get_utxos_unconfirmed(&rotxn)
+                .map_err(custom_err)?
+        };
+        let utxos = utxos
+            .into_iter()
+            .map(|(outpoint, output)| PointedOutput { outpoint, output })
+            .collect();
+        Ok(utxos)
+    }
+
     async fn getblockcount(&self) -> RpcResult<u32> {
         let height = self.app.node.try_get_height().map_err(custom_err)?;
         let block_count = height.map_or(0, |height| height + 1);
