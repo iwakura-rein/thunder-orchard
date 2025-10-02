@@ -82,7 +82,9 @@ impl std::fmt::Display for OutPoint {
 }
 
 /// Reference to a tx input.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, ToSchema,
+)]
 pub enum InPoint {
     /// Transaction input
     Regular {
@@ -436,9 +438,9 @@ where
 }
 
 /// Representation of a spent output
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpentOutput {
-    pub output: Output,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct SpentOutput<O = Output> {
+    pub output: O,
     pub inpoint: InPoint,
 }
 

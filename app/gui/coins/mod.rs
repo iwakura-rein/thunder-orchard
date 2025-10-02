@@ -38,7 +38,7 @@ impl Coins {
             shield_unshield: ShieldUnshield::default(),
             transfer_receive: TransferReceive::new(app),
             tab: Tab::default(),
-            tx_builder: TxBuilder::default(),
+            tx_builder: TxBuilder::new(app),
         }
     }
 

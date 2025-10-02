@@ -8,8 +8,8 @@ use thunder_orchard::{
     net::Peer,
     types::{
         MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        ShieldedAddress, TransparentAddress, Txid, WithdrawalBundle,
-        schema as thunder_orchard_schema,
+        ShieldedAddress, SpentOutput, TransparentAddress, Txid,
+        WithdrawalBundle, schema as thunder_orchard_schema,
     },
     wallet::Balance,
 };
@@ -128,9 +128,27 @@ pub trait Rpc {
         &self,
     ) -> RpcResult<Vec<TransparentAddress>>;
 
+    /// Get wallet STXOs
+    #[method(name = "get_wallet_stxos")]
+    async fn get_wallet_stxos(
+        &self,
+    ) -> RpcResult<Vec<SpentOutput<PointedOutput>>>;
+
+    /// Get unconfirmed wallet STXOs
+    #[method(name = "get_wallet_stxos_unconfirmed")]
+    async fn get_wallet_stxos_unconfirmed(
+        &self,
+    ) -> RpcResult<Vec<SpentOutput<PointedOutput>>>;
+
     /// Get wallet UTXOs
     #[method(name = "get_wallet_utxos")]
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
+
+    /// Get unconfirmed wallet UTXOs
+    #[method(name = "get_wallet_utxos_unconfirmed")]
+    async fn get_wallet_utxos_unconfirmed(
+        &self,
+    ) -> RpcResult<Vec<PointedOutput>>;
 
     /// Get the current block count
     #[method(name = "getblockcount")]

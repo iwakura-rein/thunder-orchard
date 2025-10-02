@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use ::orchard::keys::{FullViewingKey, IncomingViewingKey, OutgoingViewingKey};
 use bitcoin::{
     Amount,
     bip32::{ChildNumber, DerivationPath, Xpriv},
@@ -85,6 +86,7 @@ impl Balance {
 #[allow(clippy::duplicated_attributes)]
 #[derive(Debug, thiserror::Error, transitive::Transitive)]
 #[transitive(
+    from(db::error::Clear, DbError),
     from(db::error::Delete, DbError),
     from(db::error::Get, DbError),
     from(db::error::IterInit, DbError),
@@ -208,10 +210,20 @@ pub struct Wallet {
         SerdeBincode<orchard::Nullifier>,
         SerdeBincode<NotePosition>,
     >,
+    orchard_notes_unconfirmed: DatabaseUnique<
+        SerdeBincode<orchard::Nullifier>,
+        SerdeBincode<orchard::Note>,
+    >,
     orchard_spent_notes:
         DatabaseUnique<SerdeBincode<(Txid, u32)>, SerdeBincode<NotePosition>>,
+    orchard_spent_notes_unconfirmed:
+        DatabaseUnique<SerdeBincode<(Txid, u32)>, SerdeBincode<NotePosition>>,
     utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
+    utxos_unconfirmed:
+        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
     stxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    stxos_unconfirmed:
+        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
     /// Block that the wallet was last synced to.
     /// May be empty, if there is no tip yet
     tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
@@ -219,7 +231,7 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub const NUM_DBS: u32 = ShardTreeDb::<WalletEnv>::NUM_DBS + 12;
+    pub const NUM_DBS: u32 = ShardTreeDb::<WalletEnv>::NUM_DBS + 16;
 
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
@@ -255,10 +267,24 @@ impl Wallet {
         )?;
         let orchard_notes =
             DatabaseUnique::create(&env, &mut rwtxn, "orchard_notes")?;
+        let orchard_notes_unconfirmed = DatabaseUnique::create(
+            &env,
+            &mut rwtxn,
+            "orchard_notes_unconfirmed",
+        )?;
         let orchard_spent_notes =
             DatabaseUnique::create(&env, &mut rwtxn, "orchard_spent_notes")?;
+        let orchard_spent_notes_unconfirmed = DatabaseUnique::create(
+            &env,
+            &mut rwtxn,
+            "orchard_spent_notes_unconfirmed",
+        )?;
         let utxos = DatabaseUnique::create(&env, &mut rwtxn, "utxos")?;
+        let utxos_unconfirmed =
+            DatabaseUnique::create(&env, &mut rwtxn, "utxos_unconfirmed")?;
         let stxos = DatabaseUnique::create(&env, &mut rwtxn, "stxos")?;
+        let stxos_unconfirmed =
+            DatabaseUnique::create(&env, &mut rwtxn, "stxos_unconfirmed")?;
         let tip = DatabaseUnique::create(&env, &mut rwtxn, "tip")?;
         let version = DatabaseUnique::create(&env, &mut rwtxn, "version")?;
         if version.try_get(&rwtxn, &())?.is_none() {
@@ -275,9 +301,13 @@ impl Wallet {
             orchard_memos,
             orchard_note_commitments,
             orchard_notes,
+            orchard_notes_unconfirmed,
             orchard_spent_notes,
+            orchard_spent_notes_unconfirmed,
             utxos,
+            utxos_unconfirmed,
             stxos,
+            stxos_unconfirmed,
             tip,
             _version: version,
         })
@@ -437,17 +467,15 @@ impl Wallet {
 
     /// Overwrite the seed, or set it if it does not already exist.
     pub fn overwrite_seed(&self, seed: &[u8; 64]) -> Result<(), Error> {
-        let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
-        self.seed.put(&mut rwtxn, &0, seed).map_err(DbError::from)?;
-        self.address_to_index
-            .clear(&mut rwtxn)
-            .map_err(DbError::from)?;
-        self.index_to_address
-            .clear(&mut rwtxn)
-            .map_err(DbError::from)?;
-        self.utxos.clear(&mut rwtxn).map_err(DbError::from)?;
-        self.stxos.clear(&mut rwtxn).map_err(DbError::from)?;
-        rwtxn.commit().map_err(RwTxnError::from)?;
+        let mut rwtxn = self.env.write_txn()?;
+        self.seed.put(&mut rwtxn, &0, seed)?;
+        self.address_to_index.clear(&mut rwtxn)?;
+        self.index_to_address.clear(&mut rwtxn)?;
+        self.utxos.clear(&mut rwtxn)?;
+        self.utxos_unconfirmed.clear(&mut rwtxn)?;
+        self.stxos.clear(&mut rwtxn)?;
+        self.stxos_unconfirmed.clear(&mut rwtxn)?;
+        rwtxn.commit()?;
         Ok(())
     }
 
@@ -899,20 +927,67 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn spend_utxos(
+    /// Spend orchard notes, marking the spend as unconfirmed
+    pub fn spend_orchard_notes_unconfirmed(
+        &self,
+        rwtxn: &mut RwTxn,
+        spent: &[(orchard::Nullifier, Txid, u32)],
+    ) -> Result<(), Error> {
+        for (nf, txid, idx) in spent {
+            if let Some((note, pos)) = self.orchard_notes.try_get(rwtxn, nf)? {
+                let _: bool = self.orchard_notes.delete(rwtxn, nf)?;
+                self.orchard_spent_notes_unconfirmed.put(
+                    rwtxn,
+                    &(*txid, *idx),
+                    &(note, pos),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Spend UTXOs, marking the spend as confirmed.
+    pub fn spend_utxos_confirmed(
         &self,
         rwtxn: &mut RwTxn,
         spent: &[(OutPoint, InPoint)],
     ) -> Result<(), Error> {
         for (outpoint, inpoint) in spent {
-            let output = self.utxos.try_get(rwtxn, outpoint)?;
-            if let Some(output) = output {
+            let output =
+                if let Some(output) = self.utxos.try_get(rwtxn, outpoint)? {
+                    output
+                } else if let Some(spent_output) =
+                    self.stxos_unconfirmed.try_get(rwtxn, outpoint)?
+                {
+                    spent_output.output
+                } else {
+                    continue;
+                };
+            self.utxos.delete(rwtxn, outpoint)?;
+            self.stxos_unconfirmed.delete(rwtxn, outpoint)?;
+            let spent_output = SpentOutput {
+                output,
+                inpoint: *inpoint,
+            };
+            self.stxos.put(rwtxn, outpoint, &spent_output)?;
+        }
+        Ok(())
+    }
+
+    /// Spend UTXOs, marking the spend as unconfirmed.
+    pub fn spend_utxos_unconfirmed(
+        &self,
+        rwtxn: &mut RwTxn,
+        spent: &[(OutPoint, InPoint)],
+    ) -> Result<(), Error> {
+        for (outpoint, inpoint) in spent {
+            if let Some(output) = self.utxos.try_get(rwtxn, outpoint)? {
                 self.utxos.delete(rwtxn, outpoint)?;
                 let spent_output = SpentOutput {
                     output,
                     inpoint: *inpoint,
                 };
-                self.stxos.put(rwtxn, outpoint, &spent_output)?;
+                self.stxos_unconfirmed.put(rwtxn, outpoint, &spent_output)?;
             }
         }
         Ok(())
@@ -926,6 +1001,186 @@ impl Wallet {
     ) -> Result<(), Error> {
         self.tip.put(rwtxn, &(), tip)?;
         Ok(())
+    }
+
+    /// Connects an orchard bundle. Iff the bundle is confirmed,
+    /// then `shard_tree` MUST be `Some`.
+    #[allow(clippy::too_many_arguments)]
+    fn connect_orchard_bundle<'a>(
+        &self,
+        rwtxn: &mut RwTxn<'a>,
+        fvk: &FullViewingKey,
+        ivks: &[IncomingViewingKey; 2],
+        ovks: &[OutgoingViewingKey; 2],
+        mut shard_tree: Option<&mut ShardTree<'a, WalletEnv>>,
+        txid: Txid,
+        orchard_bundle: &orchard::Bundle<orchard::Authorized>,
+    ) -> Result<(), Error> {
+        // Some(_) IFF shard_tree is Some(_)
+        let next_leaf_position = if let Some(shard_tree) = shard_tree.as_mut() {
+            let next_leaf_position = shard_tree
+                .max_leaf_position(None)?
+                .map_or_else(|| 0.into(), |pos| pos + 1);
+            Some(next_leaf_position)
+        } else {
+            None
+        };
+        let mut decrypted_incoming_note_idxs = HashSet::new();
+        let decrypted_incoming_notes =
+            orchard_bundle.decrypt_outputs_with_keys(ivks.as_slice());
+        for (idx, _, note, _, memo) in decrypted_incoming_notes {
+            decrypted_incoming_note_idxs.insert(idx);
+            if memo != [0; 512] {
+                self.orchard_memos.put(rwtxn, &(txid, idx as u32), &memo)?;
+            }
+            if note.value() != Amount::ZERO {
+                let nullifier = note.nullifier(fvk);
+                if let Some(next_leaf_position) = next_leaf_position {
+                    let position = next_leaf_position + idx as u64;
+                    self.orchard_notes.put(
+                        rwtxn,
+                        &nullifier,
+                        &(note, orchard::PositionWrapper(position)),
+                    )?;
+                    let _: bool = self
+                        .orchard_notes_unconfirmed
+                        .delete(rwtxn, &nullifier)?;
+                } else {
+                    self.orchard_notes_unconfirmed
+                        .put(rwtxn, &nullifier, &note)?
+                }
+            }
+        }
+        let mut decrypted_outgoing_note_idxs = HashSet::new();
+        let decrypted_outgoing_notes =
+            orchard_bundle.recover_outputs_with_ovks(ovks.as_slice());
+        for (idx, _, _note, _, _) in decrypted_outgoing_notes {
+            decrypted_outgoing_note_idxs.insert(idx);
+            let nf = *orchard_bundle.actions()[idx].nullifier();
+            let (spent_note, position) = if let Some((spent_note, position)) =
+                self.orchard_notes.try_get(rwtxn, &nf)?
+            {
+                (spent_note, position)
+            } else if let Some((spent_note, position)) = self
+                .orchard_spent_notes_unconfirmed
+                .try_get(rwtxn, &(txid, idx as u32))?
+            {
+                (spent_note, position)
+            } else {
+                tracing::warn!(nullifier = ?nf, "Missing spent note");
+                continue;
+            };
+            self.orchard_notes.delete(rwtxn, &nf)?;
+            if shard_tree.is_some() {
+                self.orchard_spent_notes_unconfirmed
+                    .delete(rwtxn, &(txid, idx as u32))?;
+                self.orchard_spent_notes.put(
+                    rwtxn,
+                    &(txid, idx as u32),
+                    &(spent_note, position),
+                )?;
+            } else {
+                self.orchard_spent_notes_unconfirmed.put(
+                    rwtxn,
+                    &(txid, idx as u32),
+                    &(spent_note, position),
+                )?;
+            }
+        }
+        for (idx, action) in orchard_bundle.actions().iter().enumerate() {
+            let retention = if decrypted_incoming_note_idxs.contains(&idx) {
+                incrementalmerkletree::Retention::Marked
+            } else {
+                // TODO: is this correct?
+                incrementalmerkletree::Retention::Ephemeral
+            };
+            if let Some(shard_tree) = shard_tree.as_mut() {
+                let () = shard_tree.append(
+                    orchard::MerkleHashOrchard::from_cmx(&action.cmx().0),
+                    retention,
+                )?;
+            }
+            if decrypted_outgoing_note_idxs.contains(&idx) {
+                // Already decrypted
+                continue;
+            }
+            let nf = action.nullifier();
+            // If the spent note still exists, then the action could not be
+            // decrypted.
+            if let Some((spent_note, position)) =
+                if let Some((spent_note, position)) =
+                    self.orchard_notes.try_get(rwtxn, nf)?
+                {
+                    Some((spent_note, position))
+                } else {
+                    self.orchard_spent_notes_unconfirmed
+                        .try_get(rwtxn, &(txid, idx as u32))?
+                }
+            {
+                tracing::warn!(nullifier = ?nf, "Failed to decrypt action spending note");
+                self.orchard_notes.delete(rwtxn, nf)?;
+                self.orchard_spent_notes_unconfirmed
+                    .delete(rwtxn, &(txid, idx as u32))?;
+                if shard_tree.is_some() {
+                    self.orchard_spent_notes.put(
+                        rwtxn,
+                        &(txid, idx as u32),
+                        &(spent_note, position),
+                    )?;
+                } else {
+                    self.orchard_spent_notes_unconfirmed.put(
+                        rwtxn,
+                        &(txid, idx as u32),
+                        &(spent_note, position),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Connects a confirmed orchard bundle.
+    #[allow(clippy::too_many_arguments)]
+    fn connect_orchard_bundle_confirmed<'a>(
+        &self,
+        rwtxn: &mut RwTxn<'a>,
+        fvk: &FullViewingKey,
+        ivks: &[IncomingViewingKey; 2],
+        ovks: &[OutgoingViewingKey; 2],
+        shard_tree: &mut ShardTree<'a, WalletEnv>,
+        txid: Txid,
+        orchard_bundle: &orchard::Bundle<orchard::Authorized>,
+    ) -> Result<(), Error> {
+        self.connect_orchard_bundle(
+            rwtxn,
+            fvk,
+            ivks,
+            ovks,
+            Some(shard_tree),
+            txid,
+            orchard_bundle,
+        )
+    }
+
+    /// Connects an unconfirmed orchard bundle.
+    pub fn connect_orchard_bundle_unconfirmed<'a>(
+        &self,
+        rwtxn: &mut RwTxn<'a>,
+        txid: Txid,
+        orchard_bundle: &orchard::Bundle<orchard::Authorized>,
+    ) -> Result<(), Error> {
+        let fvk = self.get_orchard_full_viewing_key(rwtxn)?;
+        let ivks = self.get_orchard_incoming_viewing_keys(rwtxn)?;
+        let ovks = self.get_orchard_outgoing_viewing_keys(rwtxn)?;
+        self.connect_orchard_bundle(
+            rwtxn,
+            &fvk,
+            &ivks,
+            &ovks,
+            None,
+            txid,
+            orchard_bundle,
+        )
     }
 
     /// Connects ONLY the orchard effects from a block.
@@ -948,83 +1203,17 @@ impl Wallet {
             ShardTreeDbTxn::Rw(rw) => rw,
         };
         for tx in &body.transactions {
-            let Some(orchard_bundle) = tx.orchard_bundle.as_ref() else {
-                continue;
-            };
-            let next_leaf_position = shard_tree
-                .max_leaf_position(None)?
-                .map_or_else(|| 0.into(), |pos| pos + 1);
-            let txid = tx.txid();
-            let mut decrypted_incoming_note_idxs = HashSet::new();
-            let decrypted_incoming_notes =
-                orchard_bundle.decrypt_outputs_with_keys(&ivks);
-            for (idx, _, note, _, memo) in decrypted_incoming_notes {
-                decrypted_incoming_note_idxs.insert(idx);
-                if memo != [0; 512] {
-                    self.orchard_memos.put(
-                        &mut rwtxn,
-                        &(txid, idx as u32),
-                        &memo,
-                    )?;
-                }
-                if note.value() != Amount::ZERO {
-                    let nullifier = note.nullifier(&fvk);
-                    let position = next_leaf_position + idx as u64;
-                    self.orchard_notes.put(
-                        &mut rwtxn,
-                        &nullifier,
-                        &(note, orchard::PositionWrapper(position)),
-                    )?;
-                }
-            }
-            let mut decrypted_outgoing_note_idxs = HashSet::new();
-            let decrypted_outgoing_notes =
-                orchard_bundle.recover_outputs_with_ovks(&ovks);
-            for (idx, _, _note, _, _) in decrypted_outgoing_notes {
-                decrypted_outgoing_note_idxs.insert(idx);
-                let nf = *orchard_bundle.actions()[idx].nullifier();
-                let Some((spent_note, position)) =
-                    self.orchard_notes.try_get(&rwtxn, &nf)?
-                else {
-                    tracing::warn!(nullifier = ?nf, "Missing spent note");
-                    continue;
-                };
-                self.orchard_notes.delete(&mut rwtxn, &nf)?;
-                self.orchard_spent_notes.put(
+            if let Some(orchard_bundle) = tx.orchard_bundle.as_ref() {
+                let txid = tx.txid();
+                let () = self.connect_orchard_bundle_confirmed(
                     &mut rwtxn,
-                    &(txid, idx as u32),
-                    &(spent_note, position),
+                    &fvk,
+                    &ivks,
+                    &ovks,
+                    &mut shard_tree,
+                    txid,
+                    orchard_bundle,
                 )?;
-            }
-            for (idx, action) in orchard_bundle.actions().iter().enumerate() {
-                let retention = if decrypted_incoming_note_idxs.contains(&idx) {
-                    incrementalmerkletree::Retention::Marked
-                } else {
-                    // TODO: is this correct?
-                    incrementalmerkletree::Retention::Ephemeral
-                };
-                let () = shard_tree.append(
-                    orchard::MerkleHashOrchard::from_cmx(&action.cmx().0),
-                    retention,
-                )?;
-                if decrypted_outgoing_note_idxs.contains(&idx) {
-                    // Already decrypted
-                    continue;
-                }
-                let nf = action.nullifier();
-                // If the spent note still exists, then the action could not be
-                // decrypted.
-                if let Some((spent_note, position)) =
-                    self.orchard_notes.try_get(&rwtxn, nf)?
-                {
-                    tracing::warn!(nullifier = ?nf, "Failed to decrypt action spending note");
-                    self.orchard_notes.delete(&mut rwtxn, nf)?;
-                    self.orchard_spent_notes.put(
-                        &mut rwtxn,
-                        &(txid, idx as u32),
-                        &(spent_note, position),
-                    )?;
-                }
             }
         }
         let block_hash = header.hash();
@@ -1135,13 +1324,33 @@ impl Wallet {
         Ok(rwtxn)
     }
 
-    pub fn put_utxos(
+    /// Store UTXOs, marking as confirmed, if there is no unconfirmed spend
+    pub fn put_utxos_confirmed(
         &self,
         rwtxn: &mut RwTxn,
         utxos: &HashMap<OutPoint, Output>,
     ) -> Result<(), Error> {
         for (outpoint, output) in utxos {
-            self.utxos.put(rwtxn, outpoint, output)?;
+            if self.address_to_index.contains_key(rwtxn, &output.address)? {
+                let _: bool = self.utxos_unconfirmed.delete(rwtxn, outpoint)?;
+                if !self.stxos_unconfirmed.contains_key(rwtxn, outpoint)? {
+                    self.utxos.put(rwtxn, outpoint, output)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Put UTXOs, marking as unconfirmed
+    pub fn put_utxos_unconfirmed(
+        &self,
+        rwtxn: &mut RwTxn,
+        utxos: &HashMap<OutPoint, Output>,
+    ) -> Result<(), Error> {
+        for (outpoint, output) in utxos {
+            if self.address_to_index.contains_key(rwtxn, &output.address)? {
+                self.utxos_unconfirmed.put(rwtxn, outpoint, output)?;
+            }
         }
         Ok(())
     }
@@ -1149,11 +1358,8 @@ impl Wallet {
     pub fn get_balance(&self) -> Result<Balance, Error> {
         let mut balance = Balance::default();
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let () = self
-            .utxos
-            .iter(&rotxn)?
-            .map_err(|err| DbError::from(err).into())
-            .for_each(|(_, utxo)| {
+        let () = self.utxos.iter(&rotxn)?.map_err(Error::from).for_each(
+            |(_, utxo)| {
                 let value = utxo.get_value();
                 balance.total_transparent = balance
                     .total_transparent
@@ -1166,11 +1372,24 @@ impl Wallet {
                         .ok_or(AmountOverflowError)?;
                 }
                 Ok::<_, Error>(())
+            },
+        )?;
+        let () = self
+            .stxos_unconfirmed
+            .iter(&rotxn)?
+            .map_err(Error::from)
+            .for_each(|(_, spent_output)| {
+                let value = spent_output.output.get_value();
+                balance.total_transparent = balance
+                    .total_transparent
+                    .checked_add(value)
+                    .ok_or(AmountOverflowError)?;
+                Ok::<_, Error>(())
             })?;
         let () = self
             .orchard_notes
             .iter(&rotxn)?
-            .map_err(|err| DbError::from(err).into())
+            .map_err(Error::from)
             .for_each(|(_, (note, _))| {
                 let value = note.value();
                 balance.total_shielded = balance
@@ -1183,7 +1402,36 @@ impl Wallet {
                     .ok_or(AmountOverflowError)?;
                 Ok::<_, Error>(())
             })?;
+        let () = self
+            .orchard_spent_notes_unconfirmed
+            .iter(&rotxn)?
+            .map_err(Error::from)
+            .for_each(|(_, (note, _))| {
+                let value = note.value();
+                balance.total_shielded = balance
+                    .total_shielded
+                    .checked_add(value)
+                    .ok_or(AmountOverflowError)?;
+                Ok::<_, Error>(())
+            })?;
         Ok(balance)
+    }
+
+    pub fn get_stxos(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<HashMap<OutPoint, SpentOutput>, Error> {
+        let stxos: HashMap<_, _> = self.stxos.iter(rotxn)?.collect()?;
+        Ok(stxos)
+    }
+
+    pub fn get_stxos_unconfirmed(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<HashMap<OutPoint, SpentOutput>, Error> {
+        let stxos: HashMap<_, _> =
+            self.stxos_unconfirmed.iter(rotxn)?.collect()?;
+        Ok(stxos)
     }
 
     pub fn get_utxos(
@@ -1191,6 +1439,14 @@ impl Wallet {
         rotxn: &RoTxn,
     ) -> Result<HashMap<OutPoint, Output>, Error> {
         let utxos: HashMap<_, _> = self.utxos.iter(rotxn)?.collect()?;
+        Ok(utxos)
+    }
+
+    pub fn get_utxos_unconfirmed(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<HashMap<OutPoint, Output>, Error> {
+        let utxos = self.utxos_unconfirmed.iter(rotxn)?.collect()?;
         Ok(utxos)
     }
 
@@ -1294,9 +1550,13 @@ impl Watchable<()> for Wallet {
             orchard_memos,
             orchard_note_commitments: _,
             orchard_notes,
+            orchard_notes_unconfirmed,
             orchard_spent_notes,
+            orchard_spent_notes_unconfirmed,
             utxos,
+            utxos_unconfirmed,
             stxos,
+            stxos_unconfirmed,
             tip,
             _version: _,
         } = self;
@@ -1308,9 +1568,13 @@ impl Watchable<()> for Wallet {
             orchard_index_to_address.watch().clone(),
             orchard_memos.watch().clone(),
             orchard_notes.watch().clone(),
+            orchard_notes_unconfirmed.watch().clone(),
             orchard_spent_notes.watch().clone(),
+            orchard_spent_notes_unconfirmed.watch().clone(),
             utxos.watch().clone(),
+            utxos_unconfirmed.watch().clone(),
             stxos.watch().clone(),
+            stxos_unconfirmed.watch().clone(),
             tip.watch().clone(),
         ];
         let streams = StreamMap::from_iter(
