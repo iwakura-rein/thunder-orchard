@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, task::Poll};
 
 use bitcoin::Amount;
 use eframe::egui::{self, Button, InnerResponse};
@@ -6,38 +6,124 @@ use parking_lot::RwLock;
 use poll_promise::Promise;
 use thunder_orchard::{
     types::{OutPoint, Output, Txid},
-    wallet::{self, MeltBatch},
+    util::Watchable,
+    wallet::{self, MeltBatch, Wallet},
 };
 
 use crate::{
     app::App,
     gui::util::{UiExt, show_btc_amount},
+    util::PromiseStream,
 };
 
 use super::utxo_selector::UtxoSelector;
 
-#[derive(Debug, Default)]
+struct MeltSelectUtxosInner {
+    rt_handle: tokio::runtime::Handle,
+    wallet: Wallet,
+    utxos: HashMap<OutPoint, Output>,
+    wallet_updated: PromiseStream<<Wallet as Watchable<()>>::WatchStream>,
+}
+
 struct MeltSelectUtxos {
     fee_input: String,
+    inner: Option<Result<MeltSelectUtxosInner, String>>,
     utxo_selector: UtxoSelector,
     selected_utxos: HashMap<OutPoint, Output>,
 }
 
 impl MeltSelectUtxos {
+    pub fn new(app: Option<&App>) -> Self {
+        let mut this = Self {
+            fee_input: String::new(),
+            inner: None,
+            utxo_selector: UtxoSelector::default(),
+            selected_utxos: HashMap::default(),
+        };
+        let Some(app) = app else {
+            return this;
+        };
+        let wallet_updated = {
+            let rt_guard = app.runtime.enter();
+            let wallet_updated = PromiseStream::from(app.wallet.watch());
+            drop(rt_guard);
+            wallet_updated
+        };
+        this.inner = Some('inner: {
+            let wallet_rotxn = match app.wallet.env().read_txn() {
+                Ok(wallet_rotxn) => wallet_rotxn,
+                Err(err) => {
+                    let err_msg = format!("{:#}", anyhow::Error::from(err));
+                    tracing::error!("{err_msg}");
+                    break 'inner Err(err_msg);
+                }
+            };
+            match app.wallet.get_utxos(&wallet_rotxn) {
+                Ok(utxos) => Ok(MeltSelectUtxosInner {
+                    rt_handle: app.runtime.handle().clone(),
+                    utxos,
+                    wallet: app.wallet.clone(),
+                    wallet_updated,
+                }),
+                Err(err) => {
+                    let err_msg = format!("{:#}", anyhow::Error::from(err));
+                    tracing::error!("{err_msg}");
+                    Err(err_msg)
+                }
+            }
+        });
+        this
+    }
+
+    /// Updates values if the wallet has been updated
+    fn update(&mut self) {
+        let Some(Ok(inner)) = self.inner.as_mut() else {
+            return;
+        };
+        let rt_guard = inner.rt_handle.enter();
+        match inner.wallet_updated.poll_next() {
+            Some(Poll::Ready(())) => (),
+            Some(Poll::Pending) | None => return,
+        }
+        let wallet_env = inner.wallet.env().clone();
+        let wallet_rotxn = match wallet_env.read_txn() {
+            Ok(wallet_rotxn) => wallet_rotxn,
+            Err(err) => {
+                let err_msg = format!("{:#}", anyhow::Error::from(err));
+                tracing::error!("{err_msg}");
+                self.inner = Some(Err(err_msg));
+                return;
+            }
+        };
+        match inner.wallet.get_utxos(&wallet_rotxn) {
+            Ok(utxos) => {
+                inner.utxos = utxos;
+            }
+            Err(err) => {
+                let err_msg = format!("{:#}", anyhow::Error::from(err));
+                tracing::error!("{err_msg}");
+                self.inner = Some(Err(err_msg));
+                return;
+            }
+        }
+        drop(rt_guard)
+    }
+
     /// Returns `Some(fee)` if melt is clicked
-    fn show(
-        &mut self,
-        app: Option<&App>,
-        ui: &mut egui::Ui,
-    ) -> InnerResponse<Option<Amount>> {
+    fn show(&mut self, ui: &mut egui::Ui) -> InnerResponse<Option<Amount>> {
+        self.update();
         egui::ScrollArea::horizontal()
             .show(ui, |ui| {
                 egui::SidePanel::left("spend_utxo")
                     .exact_width(ui.available_width() / 2.)
                     .resizable(false)
                     .show_inside(ui, |ui| {
+                        let utxos = match &self.inner {
+                            Some(Ok(inner)) => Some(&inner.utxos),
+                            Some(Err(_)) | None => None,
+                        };
                         self.utxo_selector.show(
-                            app,
+                            utxos,
                             ui,
                             "Melt UTXOs",
                             true,
@@ -136,10 +222,14 @@ enum MeltInner {
 }
 
 impl MeltInner {
+    fn new(app: Option<&App>) -> Self {
+        Self::SelectUtxos(MeltSelectUtxos::new(app))
+    }
+
     fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         match self {
             Self::SelectUtxos(select_utxos) => {
-                if let Some(fee) = select_utxos.show(app, ui).inner {
+                if let Some(fee) = select_utxos.show(ui).inner {
                     let selected_utxos =
                         select_utxos.selected_utxos.drain().collect();
                     let melt_batch = MeltBatch::new(selected_utxos);
@@ -149,24 +239,21 @@ impl MeltInner {
             }
             Self::Melting(melting) => {
                 if let Some(true) = melting.show(ui) {
-                    *self = Self::SelectUtxos(MeltSelectUtxos::default())
+                    *self = Self::SelectUtxos(MeltSelectUtxos::new(app))
                 }
             }
         }
     }
 }
 
-impl Default for MeltInner {
-    fn default() -> Self {
-        Self::SelectUtxos(MeltSelectUtxos::default())
-    }
-}
-
-#[derive(Default)]
 #[repr(transparent)]
 pub struct Melt(MeltInner);
 
 impl Melt {
+    pub fn new(app: Option<&App>) -> Self {
+        Self(MeltInner::new(app))
+    }
+
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         self.0.show(app, ui);
     }

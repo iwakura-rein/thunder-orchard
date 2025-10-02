@@ -2,13 +2,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
-use parking_lot::RwLock;
-use rustreexo::accumulator::proof::Proof;
 use thunder_orchard::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, OutPoint, Output, Transaction, TransparentAddress,
+        self, InPoint, OutPoint, Transaction, TransparentAddress,
         proto::mainchain::{
             self,
             generated::{validator_service_server, wallet_service_server},
@@ -118,31 +116,33 @@ fn update_wallet<'a>(
         .state()
         .get_utxos_by_addresses(&node_rotxn, &addresses)
         .map_err(thunder_orchard::state::Error::from)?;
-    let outpoints: Vec<_> =
-        wallet.get_utxos(&wallet_rwtxn)?.into_keys().collect();
+    let outpoints: Vec<_> = {
+        let mut outpoints: Vec<_> =
+            wallet.get_utxos(&wallet_rwtxn)?.into_keys().collect();
+        outpoints
+            .extend(wallet.get_stxos_unconfirmed(&wallet_rwtxn)?.into_keys());
+        outpoints
+    };
     let spent: Vec<_> = node
         .get_spent_utxos(&node_rotxn, &outpoints)?
         .into_iter()
         .map(|(outpoint, spent_output)| (outpoint, spent_output.inpoint))
         .collect();
     drop(node_rotxn);
-    let () = wallet.put_utxos(&mut wallet_rwtxn, &utxos)?;
-    let () = wallet.spend_utxos(&mut wallet_rwtxn, &spent)?;
+    let () = wallet.put_utxos_confirmed(&mut wallet_rwtxn, &utxos)?;
+    let () = wallet.spend_utxos_confirmed(&mut wallet_rwtxn, &spent)?;
     tracing::debug!("finished wallet update");
     Ok(wallet_rwtxn)
 }
 
-/// Update utxos & wallet
-fn update(
+/// Update wallet
+fn update<'a>(
     node: &Node,
-    utxos: &mut HashMap<OutPoint, Output>,
     wallet: &Wallet,
+    mut wallet_rwtxn: wallet::RwTxn<'a>,
 ) -> Result<(), Error> {
     tracing::trace!("Updating wallet");
-    let mut wallet_rwtxn =
-        wallet.env().write_txn().map_err(wallet::Error::from)?;
     wallet_rwtxn = update_wallet(node, wallet, wallet_rwtxn)?;
-    *utxos = wallet.get_utxos(&wallet_rwtxn)?;
     wallet_rwtxn.commit().map_err(wallet::Error::from)?;
     tracing::trace!("Updated wallet");
     Ok(())
@@ -153,32 +153,24 @@ pub struct App {
     pub node: Arc<Node>,
     pub wallet: Wallet,
     pub miner: Option<Arc<TokioRwLock<Miner>>>,
-    pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
     task: Arc<JoinHandle<()>>,
-    pub transaction: Arc<RwLock<Transaction>>,
     pub runtime: Arc<tokio::runtime::Runtime>,
     pub local_pool: LocalPoolHandle,
 }
 
 impl App {
-    async fn task(
-        node: Arc<Node>,
-        utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
-        wallet: Wallet,
-    ) -> Result<(), Error> {
+    async fn task(node: Arc<Node>, wallet: Wallet) -> Result<(), Error> {
         let mut state_changes = node.watch_state();
         while let Some(()) = state_changes.next().await {
-            let () = update(&node, &mut utxos.write(), &wallet)?;
+            let wallet_rwtxn =
+                wallet.env().write_txn().map_err(wallet::Error::from)?;
+            let () = update(&node, &wallet, wallet_rwtxn)?;
         }
         Ok(())
     }
 
-    fn spawn_task(
-        node: Arc<Node>,
-        utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
-        wallet: Wallet,
-    ) -> JoinHandle<()> {
-        spawn(Self::task(node, utxos, wallet).unwrap_or_else(|err| {
+    fn spawn_task(node: Arc<Node>, wallet: Wallet) -> JoinHandle<()> {
+        spawn(Self::task(node, wallet).unwrap_or_else(|err| {
             let err = anyhow::Error::from(err);
             tracing::error!("{err:#}")
         }))
@@ -306,51 +298,75 @@ impl App {
             config.network,
             &runtime,
         )?;
-        let utxos = {
-            let mut utxos = {
-                let wallet_rotxn =
-                    wallet.env().read_txn().map_err(wallet::Error::from)?;
-                wallet.get_utxos(&wallet_rotxn)?
-            };
-            let transactions = node.get_all_transactions()?;
-            for transaction in &transactions {
-                for (outpoint, _) in &transaction.transaction.inputs {
-                    utxos.remove(outpoint);
-                }
-            }
-            Arc::new(RwLock::new(utxos))
-        };
         let node = Arc::new(node);
         let miner = miner.map(|miner| Arc::new(TokioRwLock::new(miner)));
-        let task =
-            Self::spawn_task(node.clone(), utxos.clone(), wallet.clone());
+        let task = Self::spawn_task(node.clone(), wallet.clone());
         drop(rt_guard);
         Ok(Self {
             node,
             wallet,
             miner,
-            utxos,
             task: Arc::new(task),
-            transaction: Arc::new(RwLock::new(Transaction {
-                inputs: vec![],
-                proof: Proof::default(),
-                outputs: vec![],
-                orchard_bundle: None,
-            })),
             runtime: Arc::new(runtime),
             local_pool,
         })
     }
 
-    /// Update utxos & wallet
-    fn update(&self) -> Result<(), Error> {
-        update(self.node.as_ref(), &mut self.utxos.write(), &self.wallet)
+    /// Update wallet
+    fn update<'a>(&self, wallet_rwtxn: wallet::RwTxn<'a>) -> Result<(), Error> {
+        update(self.node.as_ref(), &self.wallet, wallet_rwtxn)
     }
 
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
         let authorized_transaction = self.wallet.authorize(tx)?;
+        let mut wallet_rwtxn =
+            self.wallet.env().write_txn().map_err(wallet::Error::from)?;
+        let txid = authorized_transaction.transaction.txid();
+        let spent_inputs: Vec<_> = authorized_transaction
+            .transaction
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(vin, (outpoint, _))| {
+                let inpoint = InPoint::Regular {
+                    txid,
+                    vin: vin as u32,
+                };
+                (*outpoint, inpoint)
+            })
+            .collect();
+        let () = self.wallet.spend_utxos_unconfirmed(
+            &mut wallet_rwtxn,
+            spent_inputs.as_slice(),
+        )?;
+        let unconfirmed_outputs: HashMap<_, _> = authorized_transaction
+            .transaction
+            .outputs
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(vout, output)| {
+                let outpoint = OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                };
+                (outpoint, output)
+            })
+            .collect();
+        let () = self
+            .wallet
+            .put_utxos_unconfirmed(&mut wallet_rwtxn, &unconfirmed_outputs)?;
+        if let Some(orchard_bundle) =
+            &authorized_transaction.transaction.orchard_bundle
+        {
+            let () = self.wallet.connect_orchard_bundle_unconfirmed(
+                &mut wallet_rwtxn,
+                txid,
+                orchard_bundle,
+            )?;
+        }
         self.node.submit_transaction(authorized_transaction)?;
-        let () = self.update()?;
+        let () = self.update(wallet_rwtxn)?;
         Ok(())
     }
 
@@ -584,13 +600,11 @@ impl App {
         }
 
         drop(miner_write);
-        let () = self.update()?;
-
-        self.node
-            .regenerate_proof(&mut self.transaction.write())
-            .inspect_err(|err| {
-                tracing::error!("mine: unable to regenerate proof: {err:#}");
-            })?;
+        {
+            let wallet_rwtxn =
+                self.wallet.env().write_txn().map_err(wallet::Error::from)?;
+            let () = self.update(wallet_rwtxn)?;
+        }
         Ok(())
     }
 

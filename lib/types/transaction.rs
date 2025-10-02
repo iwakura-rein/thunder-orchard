@@ -256,6 +256,7 @@ mod tests {
     Hash,
     PartialEq,
     Serialize,
+    ToSchema,
 )]
 pub enum InPoint {
     /// Transaction input
@@ -732,9 +733,10 @@ where
     Eq,
     PartialEq,
     Serialize,
+    ToSchema,
 )]
-pub struct SpentOutput {
-    pub output: Output,
+pub struct SpentOutput<O = Output> {
+    pub output: O,
     pub inpoint: InPoint,
 }
 

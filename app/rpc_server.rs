@@ -9,7 +9,7 @@ use jsonrpsee::{
 use thunder_orchard::{
     net::Peer,
     types::{
-        PointedOutput, ShieldedAddress, TransparentAddress, Txid,
+        PointedOutput, ShieldedAddress, SpentOutput, TransparentAddress, Txid,
         WithdrawalBundle,
     },
     wallet::Balance,
@@ -204,12 +204,78 @@ impl RpcServer for RpcServerImpl {
         Ok(res)
     }
 
+    async fn get_wallet_stxos(
+        &self,
+    ) -> RpcResult<Vec<SpentOutput<PointedOutput>>> {
+        let stxos = {
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
+            self.app.wallet.get_stxos(&rotxn).map_err(custom_err)?
+        };
+        let stxos = stxos
+            .into_iter()
+            .map(|(outpoint, spent_output)| SpentOutput {
+                output: PointedOutput {
+                    outpoint,
+                    output: spent_output.output,
+                },
+                inpoint: spent_output.inpoint,
+            })
+            .collect();
+        Ok(stxos)
+    }
+
+    async fn get_wallet_stxos_unconfirmed(
+        &self,
+    ) -> RpcResult<Vec<SpentOutput<PointedOutput>>> {
+        let stxos = {
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
+            self.app
+                .wallet
+                .get_stxos_unconfirmed(&rotxn)
+                .map_err(custom_err)?
+        };
+        let stxos = stxos
+            .into_iter()
+            .map(|(outpoint, spent_output)| SpentOutput {
+                output: PointedOutput {
+                    outpoint,
+                    output: spent_output.output,
+                },
+                inpoint: spent_output.inpoint,
+            })
+            .collect();
+        Ok(stxos)
+    }
+
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
         let utxos = {
             let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
                 custom_err(thunder_orchard::wallet::Error::from(err))
             })?;
             self.app.wallet.get_utxos(&rotxn).map_err(custom_err)?
+        };
+        let utxos = utxos
+            .into_iter()
+            .map(|(outpoint, output)| PointedOutput { outpoint, output })
+            .collect();
+        Ok(utxos)
+    }
+
+    async fn get_wallet_utxos_unconfirmed(
+        &self,
+    ) -> RpcResult<Vec<PointedOutput>> {
+        let utxos = {
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
+            self.app
+                .wallet
+                .get_utxos_unconfirmed(&rotxn)
+                .map_err(custom_err)?
         };
         let utxos = utxos
             .into_iter()

@@ -44,11 +44,11 @@ impl Coins {
     pub fn new(app: Option<&App>) -> Self {
         Self {
             cast: Cast::default(),
-            melt: Melt::default(),
+            melt: Melt::new(app),
             shield_unshield: ShieldUnshield::default(),
             transfer_receive: TransferReceive::new(app),
             tab: Tab::default(),
-            tx_builder: TxBuilder::default(),
+            tx_builder: TxBuilder::new(app),
         }
     }
 

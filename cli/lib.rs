@@ -50,8 +50,14 @@ pub enum Command {
     GetShieldedWalletAddresses,
     /// Get transparent wallet addresses, sorted by base58 encoding
     GetTransparentWalletAddresses,
+    /// Get wallet STXOs
+    GetWalletStxos,
+    /// Get unconfirmed wallet STXOs
+    GetWalletStxosUnconfirmed,
     /// Get wallet UTXOs
     GetWalletUtxos,
+    /// Get unconfirmed wallet UTXOs
+    GetWalletUtxosUnconfirmed,
     /// Get the current block count
     GetBlockcount,
     /// Get the height of the latest failed withdrawal bundle
@@ -178,6 +184,7 @@ where
         Command::FormatDepositAddress { address } => {
             rpc_client.format_deposit_address(address).await?
         }
+        Command::GenerateMnemonic => rpc_client.generate_mnemonic().await?,
         Command::GetBlock { block_hash } => {
             let block = rpc_client.get_block(block_hash).await?;
             serde_json::to_string_pretty(&block)?
@@ -195,7 +202,6 @@ where
                 rpc_client.get_bmm_inclusions(block_hash).await?;
             serde_json::to_string_pretty(&bmm_inclusions)?
         }
-        Command::GenerateMnemonic => rpc_client.generate_mnemonic().await?,
         Command::GetNewShieldedAddress => {
             let address = rpc_client.get_new_shielded_address().await?;
             format!("{address}")
@@ -213,8 +219,20 @@ where
                 rpc_client.get_transparent_wallet_addresses().await?;
             serde_json::to_string_pretty(&addresses)?
         }
+        Command::GetWalletStxos => {
+            let stxos = rpc_client.get_wallet_stxos().await?;
+            serde_json::to_string_pretty(&stxos)?
+        }
+        Command::GetWalletStxosUnconfirmed => {
+            let stxos = rpc_client.get_wallet_stxos_unconfirmed().await?;
+            serde_json::to_string_pretty(&stxos)?
+        }
         Command::GetWalletUtxos => {
             let utxos = rpc_client.get_wallet_utxos().await?;
+            serde_json::to_string_pretty(&utxos)?
+        }
+        Command::GetWalletUtxosUnconfirmed => {
+            let utxos = rpc_client.get_wallet_utxos_unconfirmed().await?;
             serde_json::to_string_pretty(&utxos)?
         }
         Command::GetBlockcount => {
