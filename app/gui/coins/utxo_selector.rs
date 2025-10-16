@@ -1,33 +1,36 @@
 use std::collections::HashSet;
 
 use eframe::egui;
-use thunder_orchard::types::{
-    GetValue, OutPoint, Output, PointedOutput, Transaction, hash, orchard,
-};
+use thunder_orchard::types::{GetValue, OutPoint, Output};
 
 use crate::app::App;
 
 #[derive(Debug, Default)]
-pub struct UtxoSelector;
+pub struct UtxoSelector {
+    pub selected: HashSet<OutPoint>,
+}
 
 impl UtxoSelector {
-    pub fn show(
+    /// `on_select` is called when a utxo is selected or deselected.
+    /// The bool arg is `true` if the utxo was selected, and `false` if it was
+    /// deselected.
+    pub fn show<OnSelect>(
         &mut self,
         app: Option<&App>,
         ui: &mut egui::Ui,
-        tx: &mut Transaction<
-            orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
-        >,
-    ) {
-        ui.heading("Spend UTXO");
-        let selected: HashSet<_> =
-            tx.inputs.iter().map(|(outpoint, _)| *outpoint).collect();
+        heading: &str,
+        show_selected: bool,
+        mut on_select: OnSelect,
+    ) where
+        OnSelect: FnMut(bool, (OutPoint, Output)),
+    {
+        ui.heading(heading);
         let (total, utxos): (bitcoin::Amount, Vec<_>) = app
             .map(|app| {
                 let utxos_read = app.utxos.read();
                 let total: bitcoin::Amount = utxos_read
                     .iter()
-                    .filter(|(outpoint, _)| !selected.contains(outpoint))
+                    .filter(|(outpoint, _)| !self.selected.contains(outpoint))
                     .map(|(_, output)| output.get_value())
                     .sum();
                 let mut utxos: Vec<_> =
@@ -46,24 +49,35 @@ impl UtxoSelector {
             ui.monospace("value");
             ui.end_row();
             for (outpoint, output) in utxos {
-                if selected.contains(&outpoint) {
+                if !show_selected && self.selected.contains(&outpoint) {
                     continue;
                 }
                 //ui.horizontal(|ui| {});
                 show_utxo(ui, &outpoint, &output);
 
-                if ui
+                if show_selected {
+                    let mut selected_checked =
+                        self.selected.contains(&outpoint);
+                    if ui
+                        .checkbox(&mut selected_checked, "select UTXO")
+                        .clicked()
+                    {
+                        if selected_checked {
+                            self.selected.insert(outpoint);
+                            on_select(true, (outpoint, output));
+                        } else {
+                            self.selected.remove(&outpoint);
+                            on_select(false, (outpoint, output));
+                        }
+                    };
+                } else if ui
                     .add_enabled(
-                        !selected.contains(&outpoint),
+                        !self.selected.contains(&outpoint),
                         egui::Button::new("spend"),
                     )
                     .clicked()
                 {
-                    let utxo_hash = hash(&PointedOutput {
-                        outpoint,
-                        output: output.clone(),
-                    });
-                    tx.inputs.push((outpoint, utxo_hash));
+                    on_select(true, (outpoint, output))
                 }
                 ui.end_row();
             }

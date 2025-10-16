@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use eframe::egui;
 
-use thunder_orchard::types::{GetValue, Transaction, orchard};
+use thunder_orchard::types::{
+    GetValue, PointedOutput, Transaction, hash, orchard,
+};
 
 use super::{
     tx_creator::TxCreator,
@@ -19,7 +21,6 @@ pub struct TxBuilder {
     >,
     tx_creator: TxCreator,
     utxo_creator: UtxoCreator,
-    utxo_selector: UtxoSelector,
 }
 
 impl TxBuilder {
@@ -115,7 +116,25 @@ impl TxBuilder {
                 .exact_width(250.)
                 .resizable(false)
                 .show_inside(ui, |ui| {
-                    self.utxo_selector.show(app, ui, &mut self.base_tx);
+                    let selected = self
+                        .base_tx
+                        .inputs
+                        .iter()
+                        .map(|(outpoint, _)| *outpoint)
+                        .collect();
+                    UtxoSelector { selected }.show(
+                        app,
+                        ui,
+                        "Spend UTXO",
+                        false,
+                        |_, (outpoint, output)| {
+                            let utxo_hash = hash(&PointedOutput {
+                                outpoint,
+                                output: output.clone(),
+                            });
+                            self.base_tx.inputs.push((outpoint, utxo_hash));
+                        },
+                    );
                 });
             egui::SidePanel::left("value_in")
                 .exact_width(250.)
