@@ -152,11 +152,16 @@ impl Sidechain for PostSetup {
         let reserved_ports = ReservedPorts::new()?;
         let thunder_orchard_dir = if let Some(suffix) = init.data_dir_suffix {
             post_setup
-                .out_dir
+                .directories
+                .base_dir
                 .path()
                 .join(format!("thunder-orchard-{suffix}"))
         } else {
-            post_setup.out_dir.path().join("thunder-orchard")
+            post_setup
+                .directories
+                .base_dir
+                .path()
+                .join("thunder-orchard")
         };
         std::fs::create_dir(&thunder_orchard_dir)
             .map_err(Self::SetupError::CreateThunderOrchardDir)?;

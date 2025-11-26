@@ -131,7 +131,7 @@ where
         mainchain::ValidatorClient<MainchainTransport>: Clone,
         MainchainTransport: Send + 'static,
         <MainchainTransport as tonic::client::GrpcService<
-            tonic::body::BoxBody,
+            tonic::body::Body,
         >>::Future: Send,
     {
         let env_path = datadir.join("data.mdb");
