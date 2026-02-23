@@ -20,14 +20,14 @@ use super::utxo_selector::UtxoSelector;
 
 struct MeltSelectUtxosInner {
     rt_handle: tokio::runtime::Handle,
-    wallet: Wallet,
+    wallet: Box<Wallet>,
     utxos: HashMap<OutPoint, Output>,
     wallet_updated: PromiseStream<<Wallet as Watchable<()>>::WatchStream>,
 }
 
 struct MeltSelectUtxos {
     fee_input: String,
-    inner: Option<Result<MeltSelectUtxosInner, String>>,
+    inner: Option<Result<Box<MeltSelectUtxosInner>, String>>,
     utxo_selector: UtxoSelector,
     selected_utxos: HashMap<OutPoint, Output>,
 }
@@ -59,12 +59,12 @@ impl MeltSelectUtxos {
                 }
             };
             match app.wallet.get_utxos(&wallet_rotxn) {
-                Ok(utxos) => Ok(MeltSelectUtxosInner {
+                Ok(utxos) => Ok(Box::new(MeltSelectUtxosInner {
                     rt_handle: app.runtime.handle().clone(),
                     utxos,
-                    wallet: app.wallet.clone(),
+                    wallet: Box::new(app.wallet.clone()),
                     wallet_updated,
-                }),
+                })),
                 Err(err) => {
                     let err_msg = format!("{:#}", anyhow::Error::from(err));
                     tracing::error!("{err_msg}");

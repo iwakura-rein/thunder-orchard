@@ -121,7 +121,7 @@ pub enum Error {
     #[error("Error creating orchard note commitments DBs")]
     CreateOrchardNoteCommitmentsDb(#[from] orchard::CreateShardTreeDbError),
     #[error(transparent)]
-    Db(#[from] DbError),
+    Db(Box<DbError>),
     #[error("Database env error")]
     DbEnv(#[from] EnvError),
     #[error("Database read error")]
@@ -164,6 +164,12 @@ pub enum Error {
     Utreexo(#[from] UtreexoError),
     #[error("zip32 error ({0})")]
     Zip32(::orchard::zip32::Error),
+}
+
+impl From<DbError> for Error {
+    fn from(err: DbError) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 impl From<orchard::shardtree_db::db_txn::CommitError> for Error {

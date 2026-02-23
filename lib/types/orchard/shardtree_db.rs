@@ -306,7 +306,13 @@ pub enum CreateShardTreeDbError {
     #[error(transparent)]
     CreateDb(#[from] env::error::CreateDb),
     #[error(transparent)]
-    Db(#[from] DbError),
+    Db(Box<DbError>),
+}
+
+impl From<DbError> for CreateShardTreeDbError {
+    fn from(err: DbError) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 /// Store a [`ShardTree`] using LMDB
@@ -461,7 +467,7 @@ impl<Tag> ShardTreeDb<Tag> {
 )]
 pub enum StoreError {
     #[error(transparent)]
-    Db(#[from] DbError),
+    Db(Box<DbError>),
     #[error(
         "Invalid checkpoint ID: position ({:?}) must match checkpoint position ({:?})",
         .pos,
@@ -489,6 +495,12 @@ pub enum StoreError {
     },
     #[error("Cannot modify checkpoint position")]
     UpdateCheckpointPosition,
+}
+
+impl From<DbError> for StoreError {
+    fn from(err: DbError) -> Self {
+        Self::Db(Box::new(err))
+    }
 }
 
 pub mod db_txn {

@@ -71,8 +71,7 @@ impl UtxoSelector {
                 show_utxo(ui, outpoint, output);
 
                 if show_selected {
-                    let mut selected_checked =
-                        self.selected.contains(&outpoint);
+                    let mut selected_checked = self.selected.contains(outpoint);
                     if ui
                         .checkbox(&mut selected_checked, "select UTXO")
                         .clicked()
@@ -81,13 +80,13 @@ impl UtxoSelector {
                             self.selected.insert(*outpoint);
                             on_select(true, (*outpoint, output.clone()));
                         } else {
-                            self.selected.remove(&outpoint);
+                            self.selected.remove(outpoint);
                             on_select(false, (*outpoint, output.clone()));
                         }
                     };
                 } else if ui
                     .add_enabled(
-                        !self.selected.contains(&outpoint),
+                        !self.selected.contains(outpoint),
                         egui::Button::new("spend"),
                     )
                     .clicked()
