@@ -24,12 +24,12 @@ impl<MainchainTransport> Miner<MainchainTransport> {
     pub fn new(
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         cusf_mainchain_wallet: mainchain::WalletClient<MainchainTransport>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             cusf_mainchain,
             cusf_mainchain_wallet,
             block: None,
-        })
+        }
     }
 }
 

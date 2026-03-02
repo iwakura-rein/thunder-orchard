@@ -285,8 +285,7 @@ impl App {
         };
         let miner = cusf_mainchain_wallet
             .clone()
-            .map(|wallet| Miner::new(cusf_mainchain.clone(), wallet))
-            .transpose()?;
+            .map(|wallet| Miner::new(cusf_mainchain.clone(), wallet));
         let local_pool = LocalPoolHandle::new(1);
 
         tracing::debug!("Instantiating node struct");
@@ -478,19 +477,22 @@ impl App {
             const NUM_TRANSACTIONS: usize = 1000;
             let (txs, tx_fees) =
                 self.node.get_transactions(NUM_TRANSACTIONS)?;
-            let address = (|| {
-                let mut rwtxn = self.wallet.env().write_txn()?;
-                let res =
-                    self.wallet.get_new_transparent_address(&mut rwtxn)?;
-                rwtxn.commit()?;
-                Ok::<_, thunder_orchard::wallet::Error>(res)
-            })()?;
             let coinbase = match tx_fees {
                 bitcoin::Amount::ZERO => Vec::new(),
-                _ => vec![types::Output {
-                    address,
-                    content: types::OutputContent::Value(tx_fees),
-                }],
+                tx_fees => {
+                    let address = (|| {
+                        let mut rwtxn = self.wallet.env().write_txn()?;
+                        let res = self
+                            .wallet
+                            .get_new_transparent_address(&mut rwtxn)?;
+                        rwtxn.commit()?;
+                        Ok::<_, thunder_orchard::wallet::Error>(res)
+                    })()?;
+                    vec![types::Output {
+                        address,
+                        content: types::OutputContent::Value(tx_fees),
+                    }]
+                }
             };
             let body = types::Body::new(txs, coinbase);
             let roots = {
