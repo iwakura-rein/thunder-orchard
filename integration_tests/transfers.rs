@@ -1,12 +1,15 @@
 //! Test transfers, both transparent and unshielded
 
+use std::path::PathBuf;
+
 use bip300301_enforcer_integration_tests::{
     integration_test::{
         activate_sidechain, deposit, fund_enforcer, propose_sidechain,
     },
     setup::{
-        Mode, Network, PostSetup as EnforcerPostSetup, Sidechain as _,
-        setup as setup_enforcer,
+        Mode, Network, PostSetup as EnforcerPostSetup,
+        PreSetup as EnforcerPreSetup, SetupOpts as EnforcerSetupOpts,
+        Sidechain as _,
     },
     util::{AbortOnDrop, AsyncTrial, TestFailureCollector, TestFileRegistry},
 };
@@ -33,7 +36,7 @@ struct SidechainNodes {
 
 impl SidechainNodes {
     async fn setup(
-        bin_paths: &BinPaths,
+        thunder_orchard_bin_path: PathBuf,
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
         enforcer_post_setup: &EnforcerPostSetup,
     ) -> anyhow::Result<Self> {
@@ -41,7 +44,7 @@ impl SidechainNodes {
         let setup_single = |suffix: &str| {
             PostSetup::setup(
                 Init {
-                    thunder_orchard_app: bin_paths.thunder_orchard.clone(),
+                    thunder_orchard_app: thunder_orchard_bin_path.clone(),
                     data_dir_suffix: Some(suffix.to_owned()),
                     // Orchard transfers can take a while to prove
                     rpc_client_request_timeout: Some(
@@ -75,23 +78,28 @@ const DEPOSIT_FEE: Amount = Amount::from_sat(1_000_000);
 
 /// Initial setup for the test
 async fn setup(
-    bin_paths: &BinPaths,
+    bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<(EnforcerPostSetup, SidechainNodes)> {
-    let mut enforcer_post_setup = setup_enforcer(
-        &bin_paths.others,
-        Network::Regtest,
-        Mode::Mempool,
-        res_tx.clone(),
-    )
-    .await?;
+    let enforcer_pre_setup =
+        EnforcerPreSetup::new(bin_paths.others, Network::Regtest)?;
+    let mut enforcer_post_setup = {
+        let setup_opts: EnforcerSetupOpts = Default::default();
+        enforcer_pre_setup
+            .setup(Mode::Mempool, setup_opts, res_tx.clone())
+            .await?
+    };
     let () = propose_sidechain::<PostSetup>(&mut enforcer_post_setup).await?;
     tracing::info!("Proposed sidechain successfully");
     let () = activate_sidechain::<PostSetup>(&mut enforcer_post_setup).await?;
     tracing::info!("Activated sidechain successfully");
     let () = fund_enforcer::<PostSetup>(&mut enforcer_post_setup).await?;
-    let mut sidechain_nodes =
-        SidechainNodes::setup(bin_paths, res_tx, &enforcer_post_setup).await?;
+    let mut sidechain_nodes = SidechainNodes::setup(
+        bin_paths.thunder_orchard,
+        res_tx,
+        &enforcer_post_setup,
+    )
+    .await?;
     let alice_deposit_address =
         sidechain_nodes.alice.get_deposit_address().await?;
     tracing::info!("Creating a deposit to alice's sidechain address");
@@ -125,7 +133,7 @@ async fn transfers_task(
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     let (mut enforcer_post_setup, sidechain_nodes) =
-        setup(&bin_paths, res_tx.clone()).await?;
+        setup(bin_paths, res_tx.clone()).await?;
     // Check initial balances
     {
         let alice_balance = sidechain_nodes.alice.rpc_client.balance().await?;
