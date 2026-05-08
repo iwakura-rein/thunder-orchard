@@ -27,7 +27,7 @@ pub use hashes::{
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
     GetValue, InPoint, OutPoint, OutPointKey, Output, PointedOutput,
-    SpentOutput, Transaction,
+    PointedOutputRef, SpentOutput, Transaction,
 };
 
 pub const THIS_SIDECHAIN: u8 = 98;
@@ -156,6 +156,10 @@ pub enum WithdrawalBundleStatus {
     Failed,
     Pending,
     Submitted,
+    /// Submitted, but unexpected due to previously being dropped or failing.
+    /// It may not be possible to account for this withdrawal bundle, if it
+    /// double-spends UTXOs.
+    SubmittedUnexpected,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
