@@ -134,7 +134,7 @@ fn deposit_withdraw_roundtrip_trial(
         async move {
             let (res_tx, _) = futures::channel::mpsc::unbounded();
             let pre_setup =
-                EnforcerPreSetup::new(bin_paths.others, Network::Regtest)?;
+                EnforcerPreSetup::new(&bin_paths.others, Network::Regtest)?;
             let post_setup = {
                 let setup_opts: EnforcerSetupOpts = Default::default();
                 pre_setup
@@ -144,7 +144,7 @@ fn deposit_withdraw_roundtrip_trial(
             deposit_withdraw_roundtrip(
                 post_setup,
                 Init {
-                    thunder_orchard_app: bin_paths.thunder_orchard,
+                    thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
                     data_dir_suffix: None,
                     rpc_client_request_timeout: None,
                 },

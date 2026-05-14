@@ -82,7 +82,7 @@ async fn setup(
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<(EnforcerPostSetup, SidechainNodes)> {
     let enforcer_pre_setup =
-        EnforcerPreSetup::new(bin_paths.others, Network::Regtest)?;
+        EnforcerPreSetup::new(&bin_paths.others, Network::Regtest)?;
     let mut enforcer_post_setup = {
         let setup_opts: EnforcerSetupOpts = Default::default();
         enforcer_pre_setup
@@ -95,7 +95,7 @@ async fn setup(
     tracing::info!("Activated sidechain successfully");
     let () = fund_enforcer::<PostSetup>(&mut enforcer_post_setup).await?;
     let mut sidechain_nodes = SidechainNodes::setup(
-        bin_paths.thunder_orchard,
+        bin_paths.thunder_orchard()?.clone(),
         res_tx,
         &enforcer_post_setup,
     )
