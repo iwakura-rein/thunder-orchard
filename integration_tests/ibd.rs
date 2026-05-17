@@ -35,7 +35,7 @@ async fn setup(
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<(EnforcerPostSetup, ThunderOrchardNodes)> {
     let enforcer_pre_setup =
-        EnforcerPreSetup::new(bin_paths.others, Network::Regtest)?;
+        EnforcerPreSetup::new(&bin_paths.others, Network::Regtest)?;
     let mut enforcer_post_setup = {
         let setup_opts: EnforcerSetupOpts = Default::default();
         enforcer_pre_setup
@@ -44,7 +44,7 @@ async fn setup(
     };
     let sidechain_sender = PostSetup::setup(
         Init {
-            thunder_orchard_app: bin_paths.thunder_orchard.clone(),
+            thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
             data_dir_suffix: Some("sender".to_owned()),
             rpc_client_request_timeout: None,
         },
@@ -55,7 +55,7 @@ async fn setup(
     tracing::info!("Setup thunder-orchard send node successfully");
     let sidechain_syncer = PostSetup::setup(
         Init {
-            thunder_orchard_app: bin_paths.thunder_orchard.clone(),
+            thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
             data_dir_suffix: Some("syncer".to_owned()),
             rpc_client_request_timeout: None,
         },

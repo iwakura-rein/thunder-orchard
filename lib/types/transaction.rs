@@ -627,6 +627,20 @@ impl From<&PointedOutput> for BitcoinNodeHash {
     }
 }
 
+/// Useful when computing hashes for Utreexo,
+/// without needing to clone an output
+#[derive(BorshSerialize, Clone, Copy, Debug)]
+pub struct PointedOutputRef<'a> {
+    pub outpoint: OutPoint,
+    pub output: &'a Output,
+}
+
+impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
+    fn from(pointed_output: PointedOutputRef) -> Self {
+        Self::new(hash(&pointed_output))
+    }
+}
+
 #[derive(BorshSerialize, Debug, Deserialize, Educe, Serialize, ToSchema)]
 #[educe(
     Clone(bound(orchard::Bundle<Auth>: Clone)),
