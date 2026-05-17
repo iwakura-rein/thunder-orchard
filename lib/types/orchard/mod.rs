@@ -643,6 +643,18 @@ impl From<&CompactAction> for CompactActionRepr {
     }
 }
 
+#[derive(Debug, Error)]
+#[repr(transparent)]
+enum InvalidActionErrorInner {
+    #[error("rk is the identity `pallas::Point`")]
+    RkIdentityPoint,
+}
+
+#[derive(Debug, Error)]
+#[error("Invalid orchard action")]
+#[repr(transparent)]
+pub struct InvalidActionError(#[from] InvalidActionErrorInner);
+
 /// Borsh/Serde representation for [`Action`]
 #[serde_as]
 #[derive(Deserialize, Educe, Serialize)]
@@ -719,8 +731,12 @@ impl<'a, Auth> From<&'a orchard::Action<Auth>>
     }
 }
 
-impl<Auth> From<ActionRepr<'_, Auth, Owned>> for orchard::Action<Auth> {
-    fn from(repr: ActionRepr<'_, Auth, Owned>) -> Self {
+impl<Auth> TryFrom<ActionRepr<'_, Auth, Owned>> for orchard::Action<Auth> {
+    type Error = InvalidActionError;
+
+    fn try_from(
+        repr: ActionRepr<'_, Auth, Owned>,
+    ) -> Result<Self, Self::Error> {
         Self::from_parts(
             repr.nullifier.0,
             repr.rk.0,
@@ -729,6 +745,7 @@ impl<Auth> From<ActionRepr<'_, Auth, Owned>> for orchard::Action<Auth> {
             ValueCommitment::from(repr.cv_net).0,
             repr.authorization,
         )
+        .ok_or(InvalidActionError(InvalidActionErrorInner::RkIdentityPoint))
     }
 }
 
@@ -736,7 +753,7 @@ impl<Auth> From<ActionRepr<'_, Auth, Owned>> for orchard::Action<Auth> {
 #[repr(transparent)]
 #[serde(
     bound = "Auth: 'de, ActionRepr<'de, Auth, Owned>: Deserialize<'de>",
-    from = "ActionRepr<Auth, Owned>"
+    try_from = "ActionRepr<Auth, Owned>"
 )]
 pub struct Action<Auth>(orchard::Action<Auth>);
 
@@ -748,15 +765,20 @@ impl<Auth> Action<Auth> {
         encrypted_note: TransmittedNoteCiphertext,
         cv_net: ValueCommitment,
         authorization: Auth,
-    ) -> Self {
-        Self(orchard::Action::from_parts(
+    ) -> Result<Self, InvalidActionError> {
+        match orchard::Action::from_parts(
             nf.0,
             rk.0,
             cmx.0,
             encrypted_note.0,
             cv_net.0,
             authorization,
-        ))
+        ) {
+            Some(action) => Ok(Self(action)),
+            None => Err(InvalidActionError(
+                InvalidActionErrorInner::RkIdentityPoint,
+            )),
+        }
     }
 
     pub fn cmx(&self) -> &ExtractedNoteCommitment {
@@ -776,9 +798,13 @@ impl<Auth> Action<Auth> {
     }
 }
 
-impl<Auth> From<ActionRepr<'_, Auth, Owned>> for Action<Auth> {
-    fn from(repr: ActionRepr<'_, Auth, Owned>) -> Self {
-        Self(repr.into())
+impl<Auth> TryFrom<ActionRepr<'_, Auth, Owned>> for Action<Auth> {
+    type Error = InvalidActionError;
+
+    fn try_from(
+        repr: ActionRepr<'_, Auth, Owned>,
+    ) -> Result<Self, Self::Error> {
+        repr.try_into().map(Self)
     }
 }
 
