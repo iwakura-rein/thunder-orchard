@@ -140,12 +140,12 @@ pub enum Error {
     NotEnoughFunds,
     #[error("utxo does not exist")]
     NoUtxo,
+    #[error("Orchard balance error")]
+    OrchardBalance(#[from] orchard::BalanceError),
     #[error("Orchard bundle builder error")]
     OrchardBuilder(#[from] orchard::BuildError),
     #[error("Orchard output error")]
     OrchardOutput(#[from] orchard::OutputError),
-    #[error("Orchard value overflow error")]
-    OrchardOverflow(#[from] orchard::OverflowError),
     #[error("Orchard ShardTree error")]
     OrchardShardTree(#[from] orchard::ShardTreeError),
     #[error(
@@ -162,8 +162,8 @@ pub enum Error {
     SeedAlreadyExists,
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
-    #[error("zip32 error ({0})")]
-    Zip32(::orchard::zip32::Error),
+    #[error("zip32 error")]
+    Zip32(#[from] ::orchard::zip32::Error),
 }
 
 impl From<DbError> for Error {

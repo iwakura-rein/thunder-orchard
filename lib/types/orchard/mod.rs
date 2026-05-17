@@ -36,7 +36,7 @@ pub use orchard::{
     },
     primitives::redpallas::SpendAuth,
     tree::{MerkleHashOrchard, MerklePath},
-    value::{NoteValue, OverflowError},
+    value::{BalanceError, NoteValue},
 };
 
 pub use crate::types::address::ShieldedAddress as Address;
@@ -1799,9 +1799,7 @@ impl Builder {
         self.0.outputs()
     }
 
-    pub fn value_balance(
-        &self,
-    ) -> Result<bitcoin::SignedAmount, OverflowError> {
+    pub fn value_balance(&self) -> Result<bitcoin::SignedAmount, BalanceError> {
         self.0.value_balance().map(bitcoin::SignedAmount::from_sat)
     }
 
@@ -1823,9 +1821,13 @@ impl Builder {
                 min_outputs_needed.saturating_sub(self.outputs().len());
             let mut add_dummy_output = |ovk: OutgoingViewingKey| {
                 self.add_dummy_output(&mut rng, Some(ovk)).map_err(
-                    |OutputError {}|
-                    // Can only occur if outputs are disabled for the bundle
-                    BuildError::OutputsDisabled,
+                    |err: OutputError| match err {
+                        // Can only occur if outputs are disabled for the bundle
+                        OutputError::OutputsDisabled => {
+                            BuildError::OutputsDisabled
+                        }
+                        _ => unreachable!(),
+                    },
                 )
             };
             match dummy_outputs_needed {
