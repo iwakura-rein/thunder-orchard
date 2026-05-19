@@ -209,7 +209,7 @@ impl TxBuilder {
         self.update();
         egui::ScrollArea::horizontal().show(ui, |ui| {
             egui::SidePanel::left("spend_utxo")
-                .exact_width(250.)
+                .exact_width(300.)
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     let utxos = match &self.inner {
@@ -237,7 +237,7 @@ impl TxBuilder {
                     );
                 });
             egui::SidePanel::left("value_in")
-                .exact_width(250.)
+                .exact_width(300.)
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     let () = self.show_value_in(ui);
