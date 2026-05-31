@@ -27,6 +27,8 @@ use crate::{
 mod block;
 mod error;
 mod orchard;
+#[cfg(test)]
+mod orchard_anchor_tests;
 mod rollback;
 mod two_way_peg_data;
 
