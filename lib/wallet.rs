@@ -2006,3 +2006,58 @@ mod melt_privacy_tests {
         assert_eq!(MeltBatch::tx_fee(), STANDARD_FEE);
     }
 }
+
+#[cfg(test)]
+mod anchor_depth_tests {
+    use super::*;
+    use std::convert::Infallible;
+
+    /// Pick the anchor depth for a tree with `checkpoints` checkpoints: a
+    /// checkpoint exists at depth `d` iff `d < checkpoints`.
+    fn pick(checkpoints: usize, max_depth: usize) -> Option<usize> {
+        deepest_available_anchor_depth(max_depth, |depth| {
+            Ok::<bool, Infallible>(depth < checkpoints)
+        })
+        .unwrap()
+    }
+
+    /// With enough history, spends anchor at the full target depth, i.e. behind
+    /// the tip (depth 0), not at it.
+    #[test]
+    fn anchors_behind_the_tip_when_history_is_deep() {
+        const { assert!(ANCHOR_CHECKPOINT_DEPTH > 0, "must not anchor at the tip") };
+        assert_eq!(
+            pick(100, ANCHOR_CHECKPOINT_DEPTH),
+            Some(ANCHOR_CHECKPOINT_DEPTH)
+        );
+        assert_eq!(pick(10, 3), Some(3));
+    }
+
+    /// While the tree is young, fall back to the deepest available checkpoint.
+    #[test]
+    fn falls_back_to_deepest_available_when_young() {
+        assert_eq!(pick(1, 3), Some(0)); // only the tip checkpoint exists
+        assert_eq!(pick(2, 3), Some(1));
+        assert_eq!(pick(3, 3), Some(2));
+        assert_eq!(pick(4, 3), Some(3));
+    }
+
+    /// No checkpoints (empty tree) yields no anchor depth.
+    #[test]
+    fn no_checkpoints_yields_none() {
+        assert_eq!(pick(0, 3), None);
+        assert_eq!(pick(0, 0), None);
+    }
+
+    /// Privacy property: whenever more than one checkpoint exists, the chosen
+    /// anchor is strictly behind the tip.
+    #[test]
+    fn never_anchors_at_tip_when_history_exists() {
+        for checkpoints in 2..=20 {
+            let depth = pick(checkpoints, ANCHOR_CHECKPOINT_DEPTH).unwrap();
+            assert!(depth >= 1, "anchor must be behind the tip");
+            assert!(depth <= ANCHOR_CHECKPOINT_DEPTH);
+            assert!(depth < checkpoints);
+        }
+    }
+}
