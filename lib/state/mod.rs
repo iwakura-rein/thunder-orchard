@@ -355,6 +355,29 @@ impl State {
             .ok_or_else(|| AmountUnderflowError.into())
     }
 
+    /// Validate the anchor of an orchard bundle against known historical roots.
+    /// The empty anchor is only allowed if no spends exist.
+    pub fn validate_orchard_anchor(
+        &self,
+        rotxn: &RoTxn,
+        orchard_bundle: &types::orchard::Bundle<types::orchard::Authorized>,
+    ) -> Result<(), Error> {
+        let anchor = *orchard_bundle.anchor();
+        if anchor == types::orchard::Anchor::empty_tree()
+            && orchard_bundle.flags().spends_enabled()
+        {
+            return Err(error::Orchard::EmptyAnchor.into());
+        }
+        if !self
+            .orchard
+            .historical_roots()
+            .contains_key(rotxn, &anchor)?
+        {
+            return Err(error::Orchard::InvalidAnchor { anchor }.into());
+        }
+        Ok(())
+    }
+
     pub fn validate_transaction(
         &self,
         rotxn: &RoTxn,
@@ -375,20 +398,7 @@ impl State {
         if let Some(orchard_bundle) =
             transaction.transaction.orchard_bundle.as_ref()
         {
-            let anchor = *orchard_bundle.anchor();
-            // The empty anchor is only allowed if no spends exist
-            if anchor == types::orchard::Anchor::empty_tree()
-                && orchard_bundle.flags().spends_enabled()
-            {
-                return Err(error::Orchard::EmptyAnchor.into());
-            }
-            if !self
-                .orchard
-                .historical_roots()
-                .contains_key(rotxn, &anchor)?
-            {
-                return Err(error::Orchard::InvalidAnchor { anchor }.into());
-            }
+            let () = self.validate_orchard_anchor(rotxn, orchard_bundle)?;
         }
         if Authorization::verify_transaction(transaction).is_err() {
             return Err(Error::AuthorizationError);

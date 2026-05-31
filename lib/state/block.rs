@@ -92,6 +92,12 @@ pub fn validate(
     // Process transactions for utreexo and fee validation
     for filled_transaction in &filled_transactions {
         let txid = filled_transaction.transaction.txid();
+        // Check orchard anchor against known historical roots
+        if let Some(orchard_bundle) =
+            filled_transaction.transaction.orchard_bundle.as_ref()
+        {
+            let () = state.validate_orchard_anchor(rotxn, orchard_bundle)?;
+        }
         // hashes of spent utxos, used to verify the utreexo proof
         let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::with_capacity(
             filled_transaction.transaction.inputs.len(),
@@ -220,6 +226,12 @@ pub fn prevalidate(
     // Process transactions for utreexo and fee validation
     for filled_transaction in &filled_transactions {
         let txid = filled_transaction.transaction.txid();
+        // Check orchard anchor against known historical roots
+        if let Some(orchard_bundle) =
+            filled_transaction.transaction.orchard_bundle.as_ref()
+        {
+            let () = state.validate_orchard_anchor(rotxn, orchard_bundle)?;
+        }
         // hashes of spent utxos, used to verify the utreexo proof
         let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::with_capacity(
             filled_transaction.transaction.inputs.len(),
