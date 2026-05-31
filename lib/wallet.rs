@@ -181,6 +181,34 @@ impl From<orchard::shardtree_db::db_txn::CommitError> for Error {
     }
 }
 
+/// Number of checkpoints behind the tip to anchor shielded spends against,
+/// rather than the tip itself. A non-tip anchor avoids pinning a spend to the
+/// latest block (a timing correlator) and is reorg-safe. Notes newer than this
+/// many checkpoints are not yet spendable, so this trades spend latency for
+/// timing privacy; it is a tunable policy, not a consensus rule. When the tree
+/// has fewer checkpoints, the deepest available one is used.
+const ANCHOR_CHECKPOINT_DEPTH: usize = 3;
+
+/// Returns the deepest checkpoint depth in `0..=max_depth` for which a
+/// checkpoint exists, or `None` if the tree has no checkpoints. This anchors
+/// shielded spends `max_depth` checkpoints behind the tip, falling back to a
+/// shallower checkpoint while the tree is still young.
+fn deepest_available_anchor_depth<E>(
+    max_depth: usize,
+    mut has_checkpoint_at_depth: impl FnMut(usize) -> Result<bool, E>,
+) -> Result<Option<usize>, E> {
+    let mut depth = max_depth;
+    loop {
+        if has_checkpoint_at_depth(depth)? {
+            return Ok(Some(depth));
+        }
+        if depth == 0 {
+            return Ok(None);
+        }
+        depth -= 1;
+    }
+}
+
 /// Marker type for Wallet Env
 pub struct WalletEnv;
 
@@ -572,13 +600,29 @@ impl Wallet {
             &mut rand::rngs::OsRng,
         );
         let (commitments_tree, _db_txn, txn) = self.get_shard_tree(txn)?;
-        let anchor = match commitments_tree.root_at_checkpoint_depth(Some(0))? {
-            Some(anchor) => anchor.into(),
+        // Spend against an anchor a few checkpoints behind the tip rather than
+        // the tip itself, so the anchor does not pin the spend to the latest
+        // block. Use the deepest available checkpoint up to
+        // `ANCHOR_CHECKPOINT_DEPTH`.
+        let anchor_depth =
+            deepest_available_anchor_depth(ANCHOR_CHECKPOINT_DEPTH, |depth| {
+                Ok::<_, Error>(
+                    commitments_tree
+                        .root_at_checkpoint_depth(Some(depth))?
+                        .is_some(),
+                )
+            })?;
+        let anchor = match anchor_depth {
+            Some(depth) => commitments_tree
+                .root_at_checkpoint_depth(Some(depth))?
+                .expect("checkpoint exists at chosen depth")
+                .into(),
             None => {
                 assert!(nullifiers.is_empty());
                 orchard::Anchor::empty_tree()
             }
         };
+        let anchor_depth = anchor_depth.unwrap_or(0);
         let mut selected = BTreeMap::new();
         let mut total = bitcoin::Amount::ZERO;
         for nullifier in nullifiers {
@@ -587,10 +631,14 @@ impl Wallet {
             }
             let (note, position) =
                 self.orchard_notes.get(txn.as_ref(), &nullifier)?;
-            let path = commitments_tree
-                .witness_at_checkpoint_depth(position.0, 0)?
-                .expect("Should be able to compute merkle path at depth 0")
-                .into();
+            // Skip notes that are newer than the anchor checkpoint: they are
+            // not witnessable against the chosen anchor yet.
+            let Some(path) = commitments_tree
+                .witness_at_checkpoint_depth(position.0, anchor_depth)?
+            else {
+                continue;
+            };
+            let path = path.into();
             total =
                 total.checked_add(note.value()).ok_or(AmountOverflowError)?;
             selected.insert(nullifier, (note, path));
@@ -857,29 +905,53 @@ impl Wallet {
                 nullifiers.as_slice(),
                 &mut rand::rngs::OsRng,
             );
-            let mut builder = if let Some(nullifier) = nullifier {
+            // Spend the consolidation note against an anchor a few checkpoints
+            // behind the tip (see `ANCHOR_CHECKPOINT_DEPTH`), using the deepest
+            // available checkpoint. If the chosen note is newer than that
+            // checkpoint, shield without consolidating rather than pinning to
+            // the tip.
+            let consolidation = if let Some(nullifier) = nullifier {
                 let (spend_note, position) =
                     self.orchard_notes.get(rwtxn.as_ref(), nullifier)?;
-                let flags = orchard::BundleFlags::ENABLED;
                 let (shard_tree, _db_txn, rwtxn_) =
                     self.get_shard_tree(rwtxn)?;
                 rwtxn = rwtxn_;
-                let anchor = shard_tree
-                    .root_at_checkpoint_depth(Some(0))?
-                    .expect("Anchor should exist if notes exist")
-                    .into();
-                let merkle_path = shard_tree
-                    .witness_at_checkpoint_depth(position.0, 0)?
-                    .expect("Merkle path should exist for wallet notes")
-                    .into();
-                let mut builder = orchard::Builder::new(flags, false, anchor);
-                builder.add_spend(fvk, spend_note, merkle_path)?;
-                builder
+                let anchor_depth = deepest_available_anchor_depth(
+                    ANCHOR_CHECKPOINT_DEPTH,
+                    |depth| {
+                        Ok::<_, Error>(
+                            shard_tree
+                                .root_at_checkpoint_depth(Some(depth))?
+                                .is_some(),
+                        )
+                    },
+                )?;
+                match anchor_depth {
+                    Some(depth) => {
+                        let root = shard_tree
+                            .root_at_checkpoint_depth(Some(depth))?
+                            .expect("checkpoint exists at chosen depth");
+                        shard_tree
+                            .witness_at_checkpoint_depth(position.0, depth)?
+                            .map(|path| (root, spend_note, path))
+                    }
+                    None => None,
+                }
             } else {
-                let flags = orchard::BundleFlags::SPENDS_DISABLED;
-                let anchor = orchard::Anchor::empty_tree();
-                orchard::Builder::new(flags, true, anchor)
+                None
             };
+            let mut builder =
+                if let Some((root, spend_note, merkle_path)) = consolidation {
+                    let flags = orchard::BundleFlags::ENABLED;
+                    let mut builder =
+                        orchard::Builder::new(flags, false, root.into());
+                    builder.add_spend(fvk, spend_note, merkle_path.into())?;
+                    builder
+                } else {
+                    let flags = orchard::BundleFlags::SPENDS_DISABLED;
+                    let anchor = orchard::Anchor::empty_tree();
+                    orchard::Builder::new(flags, true, anchor)
+                };
             let output_note_value =
                 shield_amount + builder.value_balance()?.to_unsigned().unwrap();
             builder.add_output(
