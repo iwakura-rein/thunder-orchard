@@ -1778,6 +1778,21 @@ impl Bundle<Authorized> {
             .verify_proof(&VERIFYING_KEY)
             .map_err(BundleProofVerificationError)
     }
+
+    /// Verify the spend authorization signature on every action against the
+    /// provided sighash.
+    pub fn verify_spend_auth_signatures(
+        &self,
+        sighash: &[u8],
+    ) -> Result<(), SignatureVerificationError> {
+        for action in self.0.actions().iter() {
+            let () = action
+                .rk()
+                .verify(sighash, Signature::peel_ref(action.authorization()))
+                .map_err(SignatureVerificationError)?;
+        }
+        Ok(())
+    }
 }
 
 impl<Auth> BorshSerialize for Bundle<Auth>
