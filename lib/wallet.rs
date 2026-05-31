@@ -1664,6 +1664,16 @@ impl Watchable<()> for Wallet {
     }
 }
 
+/// Fee used for every melt and cast transaction.
+///
+/// The fee is a fixed, shared constant rather than a user-chosen value. The
+/// fee of a melt/cast transaction is publicly derivable from its value balance
+/// and transparent output, so a per-user fee would be a fingerprint that links
+/// every bill in a cast (or every tx in a melt) together, defeating the
+/// unlinkability that fresh addresses and randomized timing provide. A single
+/// shared constant carries no per-user entropy.
+pub const STANDARD_FEE: Amount = Amount::from_sat(1000);
+
 /// Represents an ongoing cast
 #[derive(Debug)]
 pub struct Cast {
@@ -1674,6 +1684,13 @@ pub struct Cast {
 }
 
 impl Cast {
+    /// Fee charged for every cast transaction. Shared by all users and
+    /// independent of the bill or the amount, so it cannot be used to link
+    /// a cast's bills. See [`STANDARD_FEE`].
+    pub fn tx_fee() -> Amount {
+        STANDARD_FEE
+    }
+
     /// Convert an bill exponent (n in 2^n sats) to the weekday on which a
     /// 2^n sats bill should be withdrawn
     fn bill_exponent_to_weekday(exp: u32) -> chrono::Weekday {
@@ -1740,7 +1757,6 @@ impl Cast {
 
     pub async fn next_tx(
         &mut self,
-        fee: Amount,
     ) -> Option<impl FnOnce(&Accumulator, &Wallet) -> Result<Transaction, Error>>
     {
         let (bill_exponent, ts) =
@@ -1751,6 +1767,7 @@ impl Cast {
                 .unwrap();
         tokio::time::sleep(sleep_duration).await;
         let amount = Amount::from_sat(1 << bill_exponent);
+        let fee = Self::tx_fee();
         let _ = self.bill_exponents_with_timestamps.pop_front().unwrap();
         let res = move |accumulator: &Accumulator, wallet: &Wallet| {
             wallet.create_unshield_transaction(accumulator, amount, fee)
@@ -1796,13 +1813,15 @@ impl MeltBatch {
 
     pub async fn next_tx(
         &mut self,
-        fee: Amount,
     ) -> Result<
         Option<
             impl FnOnce(&Accumulator, &Wallet) -> Result<Transaction, Error>,
         >,
         Error,
     > {
+        // Shared standard fee, not user-chosen, so melt txs cannot be linked
+        // by a per-user fee fingerprint. See [`STANDARD_FEE`].
+        let fee = STANDARD_FEE;
         let Some(((_, output), duration)) = self.utxos_with_duration.front()
         else {
             return Ok(None);
