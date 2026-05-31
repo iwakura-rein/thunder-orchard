@@ -1671,7 +1671,8 @@ impl Wallet {
         })
     }
 
-    pub fn get_last_orchard_address(
+    /// Gets the latest generated Orchard address.
+    pub fn try_get_last_orchard_address(
         &self,
         rotxn: &RoTxn,
     ) -> Result<Option<orchard::Address>, Error> {
@@ -1679,7 +1680,8 @@ impl Wallet {
         Ok(last.map(|(_, address)| address))
     }
 
-    pub fn get_last_transparent_address(
+    /// Gets the latest generated transparent address.
+    pub fn try_get_last_transparent_address(
         &self,
         rotxn: &RoTxn,
     ) -> Result<Option<TransparentAddress>, Error> {
@@ -1687,22 +1689,26 @@ impl Wallet {
         Ok(last.map(|(_, address)| address))
     }
 
-    pub fn get_orchard_address_or_new(
+    /// Gets the latest generated Orchard address, or generates a new one if no
+    /// Orchard addresses have already been generated.
+    pub fn get_or_generate_last_orchard_address(
         &self,
         rwtxn: &mut RwTxn,
     ) -> Result<orchard::Address, Error> {
-        if let Some(address) = self.get_last_orchard_address(rwtxn)? {
+        if let Some(address) = self.try_get_last_orchard_address(rwtxn)? {
             Ok(address)
         } else {
             self.get_new_orchard_address(rwtxn)
         }
     }
 
-    pub fn get_transparent_address_or_new(
+    /// Gets the latest generated transparent address, or generates a new one
+    /// if no transparent addresses have already been generated.
+    pub fn get_or_generate_last_transparent_address(
         &self,
         rwtxn: &mut RwTxn,
     ) -> Result<TransparentAddress, Error> {
-        if let Some(address) = self.get_last_transparent_address(rwtxn)? {
+        if let Some(address) = self.try_get_last_transparent_address(rwtxn)? {
             Ok(address)
         } else {
             self.get_new_transparent_address(rwtxn)

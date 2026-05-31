@@ -1,14 +1,12 @@
-use crate::wallet::{Error, Wallet};
+use crate::wallet::Wallet;
 
 #[test]
-fn test_get_address_or_new() -> Result<(), Error> {
-    let test_dir = std::env::temp_dir().join(format!(
-        "thunder_orchard_test_wallet_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+fn test_get_or_generate_last_address() -> anyhow::Result<()> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let test_dir = std::env::temp_dir()
+        .join(format!("thunder_orchard_test_wallet_{nanos}"));
 
     // Ensure clean state
     if test_dir.exists() {
@@ -27,47 +25,48 @@ fn test_get_address_or_new() -> Result<(), Error> {
         let mut rwtxn = wallet.env().write_txn()?;
 
         // Get last address when none have been generated
-        let last_orchard = wallet.get_last_orchard_address(&rwtxn)?;
+        let last_orchard = wallet.try_get_last_orchard_address(&rwtxn)?;
         assert!(last_orchard.is_none());
-        let last_transparent = wallet.get_last_transparent_address(&rwtxn)?;
+        let last_transparent =
+            wallet.try_get_last_transparent_address(&rwtxn)?;
         assert!(last_transparent.is_none());
 
-        // Get address or new should generate the first address
-        let orchard_addr1 = wallet.get_orchard_address_or_new(&mut rwtxn)?;
+        // The first call should generate the first address.
+        let orchard_addr1 =
+            wallet.get_or_generate_last_orchard_address(&mut rwtxn)?;
         let transparent_addr1 =
-            wallet.get_transparent_address_or_new(&mut rwtxn)?;
+            wallet.get_or_generate_last_transparent_address(&mut rwtxn)?;
 
-        // Now last address should be addr1
-        let last_orchard = wallet.get_last_orchard_address(&rwtxn)?;
+        let last_orchard = wallet.try_get_last_orchard_address(&rwtxn)?;
         assert_eq!(last_orchard, Some(orchard_addr1));
-        let last_transparent = wallet.get_last_transparent_address(&rwtxn)?;
+        let last_transparent =
+            wallet.try_get_last_transparent_address(&rwtxn)?;
         assert_eq!(last_transparent, Some(transparent_addr1));
 
-        // Subsequent get_address_or_new calls should return the same addr1
-        let orchard_addr2 = wallet.get_orchard_address_or_new(&mut rwtxn)?;
+        let orchard_addr2 =
+            wallet.get_or_generate_last_orchard_address(&mut rwtxn)?;
         assert_eq!(orchard_addr1, orchard_addr2);
         let transparent_addr2 =
-            wallet.get_transparent_address_or_new(&mut rwtxn)?;
+            wallet.get_or_generate_last_transparent_address(&mut rwtxn)?;
         assert_eq!(transparent_addr1, transparent_addr2);
 
-        // Generating a new address explicitly should give a new one
         let orchard_addr3 = wallet.get_new_orchard_address(&mut rwtxn)?;
         assert_ne!(orchard_addr1, orchard_addr3);
         let transparent_addr3 =
             wallet.get_new_transparent_address(&mut rwtxn)?;
         assert_ne!(transparent_addr1, transparent_addr3);
 
-        // Now last address should be addr3
-        let last_orchard = wallet.get_last_orchard_address(&rwtxn)?;
+        let last_orchard = wallet.try_get_last_orchard_address(&rwtxn)?;
         assert_eq!(last_orchard, Some(orchard_addr3));
-        let last_transparent = wallet.get_last_transparent_address(&rwtxn)?;
+        let last_transparent =
+            wallet.try_get_last_transparent_address(&rwtxn)?;
         assert_eq!(last_transparent, Some(transparent_addr3));
 
-        // And get_address_or_new should return addr3
-        let orchard_addr4 = wallet.get_orchard_address_or_new(&mut rwtxn)?;
+        let orchard_addr4 =
+            wallet.get_or_generate_last_orchard_address(&mut rwtxn)?;
         assert_eq!(orchard_addr3, orchard_addr4);
         let transparent_addr4 =
-            wallet.get_transparent_address_or_new(&mut rwtxn)?;
+            wallet.get_or_generate_last_transparent_address(&mut rwtxn)?;
         assert_eq!(transparent_addr3, transparent_addr4);
     }
 
