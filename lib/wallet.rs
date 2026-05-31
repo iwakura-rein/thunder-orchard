@@ -1894,3 +1894,43 @@ mod fee_privacy_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod melt_privacy_tests {
+    use super::*;
+
+    fn bill_exponents(melt: &MeltBatch) -> Vec<u32> {
+        melt.bill_exponents_with_timestamps
+            .iter()
+            .map(|(exp, _ts)| *exp)
+            .collect()
+    }
+
+    /// A melt decomposes the amount into power-of-two "bill" denominations
+    /// (one shield transaction per set bit). Each transaction therefore shields
+    /// a standard denomination `2^n`, so its publicly visible value balance no
+    /// longer reveals the exact value of a source UTXO.
+    #[test]
+    fn melt_decomposes_into_standard_denominations() {
+        for sats in [1u64, 0b1011, 1_000_000, (1 << 20) + (1 << 5) + 1] {
+            let melt = MeltBatch::new(Amount::from_sat(sats));
+            let mut exps = bill_exponents(&melt);
+            exps.sort_unstable();
+            let expected: Vec<u32> =
+                (0..u64::BITS).filter(|i| (sats >> i) & 1 == 1).collect();
+            assert_eq!(
+                exps, expected,
+                "melt bills must be the set bits of {sats}"
+            );
+            let sum: u64 = exps.iter().map(|exp| 1u64 << exp).sum();
+            assert_eq!(sum, sats, "melt bills must sum back to the amount");
+        }
+    }
+
+    /// Every melt transaction uses the shared standard fee, independent of the
+    /// amount, so melt transactions cannot be linked by a per-user fee.
+    #[test]
+    fn melt_uses_shared_standard_fee() {
+        assert_eq!(MeltBatch::tx_fee(), STANDARD_FEE);
+    }
+}
