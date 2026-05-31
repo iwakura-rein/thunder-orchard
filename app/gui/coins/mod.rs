@@ -44,7 +44,7 @@ impl Coins {
     pub fn new(app: Option<&App>) -> Self {
         Self {
             cast: Cast::default(),
-            melt: Melt::new(app),
+            melt: Melt::default(),
             shield_unshield: ShieldUnshield::default(),
             transfer_receive: TransferReceive::new(app),
             tab: Tab::default(),
