@@ -118,6 +118,8 @@ fn verify_orchard(transaction: &Transaction) -> Result<(), Error> {
         let bvk = orchard_bundle.binding_validating_key();
         let binding_sig = orchard_bundle.authorization().binding_signature();
         let () = bvk.verify(txid.as_slice(), binding_sig)?;
+        let () =
+            orchard_bundle.verify_spend_auth_signatures(txid.as_slice())?;
         let () = orchard_bundle.verify_proof()?;
     };
     Ok(())
