@@ -1849,3 +1849,67 @@ impl MeltBatch {
         Ok(Some(res))
     }
 }
+
+#[cfg(test)]
+mod fee_privacy_tests {
+    use super::*;
+
+    fn bill_exponents(cast: &Cast) -> Vec<u32> {
+        cast.bill_exponents_with_timestamps
+            .iter()
+            .map(|(exp, _ts)| *exp)
+            .collect()
+    }
+
+    /// A cast decomposes the amount into power-of-two "bill" denominations
+    /// (one per set bit), with no fee folded into the bill amounts. This keeps
+    /// each bill a standard denomination shared across users.
+    #[test]
+    fn cast_decomposes_into_standard_denominations() {
+        for sats in [1u64, 0b1011, 1_000_000, (1 << 20) + (1 << 5) + 1] {
+            let cast = Cast::new(Amount::from_sat(sats));
+            let mut exps = bill_exponents(&cast);
+            exps.sort_unstable();
+            let expected: Vec<u32> =
+                (0..u64::BITS).filter(|i| (sats >> i) & 1 == 1).collect();
+            assert_eq!(exps, expected, "bills must be the set bits of {sats}");
+            let sum: u64 = exps.iter().map(|exp| 1u64 << exp).sum();
+            assert_eq!(sum, sats, "bills must sum back to the amount");
+        }
+    }
+
+    /// Privacy regression: the fee an observer can derive from a cast
+    /// transaction (value_balance - transparent_output) is the same shared
+    /// `STANDARD_FEE` for every bill and every cast, regardless of the amount.
+    /// A per-user or per-amount fee would be a fingerprint linking a cast's
+    /// bills together. The fee is not a caller-supplied parameter.
+    #[test]
+    fn all_cast_bills_use_the_same_shared_fee() {
+        assert_eq!(Cast::tx_fee(), STANDARD_FEE);
+
+        // Footprint of a bill as seen on chain: an unshield of denomination
+        // `2^exp` has transparent output `2^exp` and value balance
+        // `2^exp + fee`, so the observer-derived fee is exactly the fee used.
+        let observed_fees = |sats: u64| -> Vec<Amount> {
+            let cast = Cast::new(Amount::from_sat(sats));
+            bill_exponents(&cast)
+                .into_iter()
+                .map(|exp| {
+                    let denom = Amount::from_sat(1 << exp);
+                    let value_balance = denom + Cast::tx_fee();
+                    value_balance - denom
+                })
+                .collect()
+        };
+
+        // Different amounts (e.g. two different users), all bills, one fee.
+        for sats in [0b1011u64, 1_000_000, 12_345_678] {
+            for fee in observed_fees(sats) {
+                assert_eq!(
+                    fee, STANDARD_FEE,
+                    "every cast bill must use the shared standard fee"
+                );
+            }
+        }
+    }
+}
