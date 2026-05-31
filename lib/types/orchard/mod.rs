@@ -2162,3 +2162,196 @@ impl Serialize for Frontier {
         repr.serialize(serializer)
     }
 }
+
+#[cfg(test)]
+mod spend_auth_tests {
+    use super::*;
+    use crate::{authorization, types::Transaction};
+    use incrementalmerkletree::{Hashable, Level};
+    use rustreexo::accumulator::proof::Proof;
+
+    /// Forge a note owned by a fresh key, plus a one-leaf merkle path + anchor.
+    fn forge_spend() -> (
+        FullViewingKey,
+        SpendAuthorizingKey,
+        orchard::Note,
+        MerklePath,
+        Anchor,
+    ) {
+        let sk = loop {
+            let b: [u8; 32] = rand::random();
+            if let Some(sk) = SpendingKey::from_bytes(b).into_option() {
+                break sk;
+            }
+        };
+        let fvk = FullViewingKey::from(&sk);
+        let ask = SpendAuthorizingKey::from(&sk);
+        let recipient = fvk.address_at(0u32, Scope::External);
+        let rho = loop {
+            let b: [u8; 32] = rand::random();
+            if let Some(r) = orchard::note::Rho::from_bytes(&b).into_option() {
+                break r;
+            }
+        };
+        let rseed = loop {
+            let b: [u8; 32] = rand::random();
+            if let Some(s) =
+                orchard::note::RandomSeed::from_bytes(b, &rho).into_option()
+            {
+                break s;
+            }
+        };
+        let note = orchard::Note::from_parts(
+            recipient,
+            NoteValue::from_raw(1000),
+            rho,
+            rseed,
+        )
+        .into_option()
+        .unwrap();
+        let cmx: orchard::note::ExtractedNoteCommitment =
+            note.commitment().into();
+        let auth_path: [MerkleHashOrchard; 32] = std::array::from_fn(|i| {
+            <MerkleHashOrchard as Hashable>::empty_root(Level::from(i as u8))
+        });
+        let path = MerklePath::from_parts(0, auth_path);
+        let anchor = Anchor::wrap(path.root(cmx));
+        (fvk, ask, note, path, anchor)
+    }
+
+    /// Build a fully valid, signed shielded-spend transaction.
+    fn signed_tx() -> Transaction {
+        let (fvk, ask, note, path, anchor) = forge_spend();
+        let mut builder = Builder::new(BundleFlags::ENABLED, false, anchor);
+        builder
+            .add_spend(fvk.clone(), Note::wrap(note), path)
+            .unwrap();
+        let ovk = fvk.to_ovk(Scope::Internal);
+        let out_addr = Address::wrap(fvk.address_at(1u32, Scope::External));
+        builder
+            .add_output(
+                Some(ovk.clone()),
+                out_addr,
+                NoteValue::from_raw(0),
+                [0u8; 512],
+            )
+            .unwrap();
+        let (unauth, _meta) = builder
+            .build(rand::rngs::OsRng, Some(ovk))
+            .unwrap()
+            .unwrap();
+        let proven = unauth.create_proof(rand::rngs::OsRng).unwrap();
+        let tx = Transaction {
+            inputs: Vec::new(),
+            proof: Proof::default(),
+            outputs: Vec::new(),
+            orchard_bundle: Some(proven),
+        };
+        authorization::sign_orchard(&[ask], tx).unwrap()
+    }
+
+    /// A correctly signed shielded spend passes spend-auth verification.
+    #[test]
+    fn valid_spend_auth_accepted() {
+        let tx = signed_tx();
+        let txid = tx.txid();
+        let bundle = tx.orchard_bundle.as_ref().unwrap();
+        bundle
+            .verify_spend_auth_signatures(txid.as_slice())
+            .unwrap();
+        bundle.verify_proof().unwrap();
+        let authtx = crate::types::AuthorizedTransaction {
+            transaction: tx.clone(),
+            authorizations: Vec::new(),
+        };
+        authorization::verify_authorized_transaction(&authtx).unwrap();
+    }
+
+    /// A spend with a forged/invalid spend-auth signature is rejected, even
+    /// though the binding signature and the proof are still valid.
+    #[test]
+    fn invalid_spend_auth_rejected() {
+        let tx = signed_tx();
+        let txid = tx.txid();
+        let sighash = txid.0;
+
+        // Replace the first action's spend-auth signature with a signature from
+        // an unrelated key. This does not change the txid (which excludes
+        // authorizations), the binding signature, or the proof.
+        let raw = tx.orchard_bundle.unwrap().0;
+        let bogus_sk = loop {
+            let b: [u8; 32] = rand::random();
+            if let Ok(k) = redpallas::SigningKey::<SpendAuth>::try_from(b) {
+                break k;
+            }
+        };
+        let bogus = Signature::wrap(bogus_sk.sign(rand::rngs::OsRng, &sighash));
+        let mut new_actions: Vec<orchard::Action<Signature<SpendAuth>>> = raw
+            .actions()
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let auth = if i == 0 {
+                    bogus.clone()
+                } else {
+                    a.authorization().clone()
+                };
+                orchard::Action::from_parts(
+                    *a.nullifier(),
+                    a.rk().clone(),
+                    *a.cmx(),
+                    a.encrypted_note().clone(),
+                    a.cv_net().clone(),
+                    auth,
+                )
+                .unwrap()
+            })
+            .collect();
+        let head = new_actions.remove(0);
+        let actions = NonEmpty {
+            head,
+            tail: new_actions,
+        };
+        let tampered = Bundle(
+            Authorized::bundle_from_parts(
+                actions,
+                *raw.flags(),
+                *raw.value_balance(),
+                *raw.anchor(),
+                raw.authorization().clone(),
+            )
+            .unwrap(),
+        );
+
+        let tampered_tx = Transaction {
+            inputs: Vec::new(),
+            proof: Proof::default(),
+            outputs: Vec::new(),
+            orchard_bundle: Some(tampered),
+        };
+        // Same txid, valid binding signature, valid proof.
+        assert_eq!(tampered_tx.txid().0, sighash);
+        let bundle = tampered_tx.orchard_bundle.as_ref().unwrap();
+        bundle.verify_proof().unwrap();
+        let bvk = bundle.binding_validating_key();
+        bvk.verify(
+            tampered_tx.txid().as_slice(),
+            bundle.authorization().binding_signature(),
+        )
+        .unwrap();
+        // Only spend-auth verification catches it.
+        assert!(
+            bundle
+                .verify_spend_auth_signatures(tampered_tx.txid().as_slice())
+                .is_err()
+        );
+        let authtx = crate::types::AuthorizedTransaction {
+            transaction: tampered_tx,
+            authorizations: Vec::new(),
+        };
+        assert!(matches!(
+            authorization::verify_authorized_transaction(&authtx),
+            Err(authorization::Error::OrchardSignature(_))
+        ));
+    }
+}
