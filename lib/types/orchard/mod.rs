@@ -655,6 +655,113 @@ enum InvalidActionErrorInner {
 #[repr(transparent)]
 pub struct InvalidActionError(#[from] InvalidActionErrorInner);
 
+/// Error constructing an [`orchard::bundle::Bundle`] from deserialized parts.
+///
+/// As of orchard 0.14, building an authorized bundle can fail if its proof is
+/// not the expected size for the number of actions.
+#[derive(Debug, Error)]
+pub enum InvalidBundleError {
+    #[error(transparent)]
+    Action(#[from] InvalidActionError),
+    #[error("invalid orchard bundle: {0}")]
+    Bundle(String),
+}
+
+/// Construct an [`orchard::bundle::Bundle`] from its parts, dispatching to the
+/// orchard constructor appropriate for the authorization type. This replaces
+/// the generic `Bundle::from_parts` that orchard 0.14 removed: authorized
+/// bundles go through the fallible, proof-size-checked `try_from_parts`, while
+/// effects-only bundles use the infallible `from_parts`.
+trait BundleFromParts: BundleAuthorization + Sized {
+    fn bundle_from_parts(
+        actions: NonEmpty<orchard::Action<Self::SpendAuth>>,
+        flags: orchard::bundle::Flags,
+        value_balance: i64,
+        anchor: orchard::tree::Anchor,
+        authorization: Self,
+    ) -> Result<orchard::bundle::Bundle<Self, i64>, InvalidBundleError>;
+}
+
+impl BundleFromParts for Authorized {
+    fn bundle_from_parts(
+        actions: NonEmpty<orchard::Action<Self::SpendAuth>>,
+        flags: orchard::bundle::Flags,
+        value_balance: i64,
+        anchor: orchard::tree::Anchor,
+        authorization: Self,
+    ) -> Result<orchard::bundle::Bundle<Self, i64>, InvalidBundleError> {
+        // orchard's `try_from_parts` is defined only for the native
+        // `orchard::bundle::Authorized`, so rebuild each action with the native
+        // redpallas spend-auth signature type, construct the native bundle, then
+        // map the authorization back to the wrapper types used in this crate.
+        fn native_action(
+            action: orchard::Action<Signature<SpendAuth>>,
+        ) -> Result<
+            orchard::Action<redpallas::Signature<SpendAuth>>,
+            InvalidActionError,
+        > {
+            orchard::Action::from_parts(
+                *action.nullifier(),
+                action.rk().clone(),
+                *action.cmx(),
+                action.encrypted_note().clone(),
+                action.cv_net().clone(),
+                Signature::peel(action.authorization().clone()),
+            )
+            .map_err(|_| {
+                InvalidActionError(InvalidActionErrorInner::RkIdentityPoint)
+            })
+        }
+        let NonEmpty { head, tail } = actions;
+        let head = native_action(head)?;
+        let tail = tail
+            .into_iter()
+            .map(native_action)
+            .collect::<Result<Vec<_>, _>>()?;
+        let native_actions = NonEmpty { head, tail };
+        let native = orchard::bundle::Bundle::<
+            orchard::bundle::Authorized,
+            i64,
+        >::try_from_parts(
+            native_actions,
+            flags,
+            value_balance,
+            anchor,
+            authorization.0,
+            orchard::bundle::ProofSizeEnforcement::Strict,
+        )
+        .map_err(|err| InvalidBundleError::Bundle(err.to_string()))?;
+        let bundle = native.map_authorization(
+            &mut (),
+            |_: &mut (),
+             _: &orchard::bundle::Authorized,
+             spend_auth: redpallas::Signature<SpendAuth>| {
+                Signature::<SpendAuth>::wrap(spend_auth)
+            },
+            |_: &mut (), auth: orchard::bundle::Authorized| Authorized(auth),
+        );
+        Ok(bundle)
+    }
+}
+
+impl BundleFromParts for EffectsOnly {
+    fn bundle_from_parts(
+        actions: NonEmpty<orchard::Action<Self::SpendAuth>>,
+        flags: orchard::bundle::Flags,
+        value_balance: i64,
+        anchor: orchard::tree::Anchor,
+        authorization: Self,
+    ) -> Result<orchard::bundle::Bundle<Self, i64>, InvalidBundleError> {
+        Ok(orchard::bundle::Bundle::from_parts(
+            actions,
+            flags,
+            value_balance,
+            anchor,
+            authorization,
+        ))
+    }
+}
+
 /// Borsh/Serde representation for [`Action`]
 #[serde_as]
 #[derive(Deserialize, Educe, Serialize)]
@@ -745,7 +852,9 @@ impl<Auth> TryFrom<ActionRepr<'_, Auth, Owned>> for orchard::Action<Auth> {
             ValueCommitment::from(repr.cv_net).0,
             repr.authorization,
         )
-        .ok_or(InvalidActionError(InvalidActionErrorInner::RkIdentityPoint))
+        .map_err(|_| {
+            InvalidActionError(InvalidActionErrorInner::RkIdentityPoint)
+        })
     }
 }
 
@@ -766,19 +875,18 @@ impl<Auth> Action<Auth> {
         cv_net: ValueCommitment,
         authorization: Auth,
     ) -> Result<Self, InvalidActionError> {
-        match orchard::Action::from_parts(
+        orchard::Action::from_parts(
             nf.0,
             rk.0,
             cmx.0,
             encrypted_note.0,
             cv_net.0,
             authorization,
-        ) {
-            Some(action) => Ok(Self(action)),
-            None => Err(InvalidActionError(
-                InvalidActionErrorInner::RkIdentityPoint,
-            )),
-        }
+        )
+        .map(Self)
+        .map_err(|_| {
+            InvalidActionError(InvalidActionErrorInner::RkIdentityPoint)
+        })
     }
 
     pub fn cmx(&self) -> &ExtractedNoteCommitment {
@@ -1478,13 +1586,17 @@ where
     }
 }
 
-impl<Auth> From<BundleRepr<'_, Auth, Owned>>
+impl<Auth> TryFrom<BundleRepr<'_, Auth, Owned>>
     for orchard::bundle::Bundle<Auth, i64>
 where
-    Auth: BundleAuthorization,
+    Auth: BundleFromParts,
 {
-    fn from(repr: BundleRepr<'_, Auth, Owned>) -> Self {
-        Self::from_parts(
+    type Error = InvalidBundleError;
+
+    fn try_from(
+        repr: BundleRepr<'_, Auth, Owned>,
+    ) -> Result<Self, Self::Error> {
+        Auth::bundle_from_parts(
             peel_nonempty(repr.actions),
             repr.flags.0,
             repr.balance.to_sat(),
@@ -1498,8 +1610,8 @@ where
 #[educe(Clone(bound(Auth: Clone, Auth::SpendAuth: Clone)))]
 #[repr(transparent)]
 #[serde(
-    bound = "Auth: 'de, BundleRepr<'de, Auth, Owned>: Deserialize<'de>",
-    from = "BundleRepr<Auth, Owned>"
+    bound = "Auth: BundleFromParts + 'de, BundleRepr<'de, Auth, Owned>: Deserialize<'de>",
+    try_from = "BundleRepr<Auth, Owned>"
 )]
 pub struct Bundle<Auth>(orchard::bundle::Bundle<Auth, i64>)
 where
@@ -1509,22 +1621,6 @@ impl<Auth> Bundle<Auth>
 where
     Auth: BundleAuthorization,
 {
-    pub fn new(
-        actions: NonEmpty<Action<Auth::SpendAuth>>,
-        flags: BundleFlags,
-        value_balance: bitcoin::SignedAmount,
-        anchor: Anchor,
-        authorization: Auth,
-    ) -> Self {
-        Self(orchard::Bundle::from_parts(
-            peel_nonempty(actions),
-            flags.0,
-            value_balance.to_sat(),
-            anchor.0,
-            authorization,
-        ))
-    }
-
     fn peel_ref<Inner>(&self) -> &Bundle<Inner>
     where
         Auth: TransparentWrapper<Inner>,
@@ -1697,12 +1793,16 @@ where
     }
 }
 
-impl<Auth> From<BundleRepr<'_, Auth, Owned>> for Bundle<Auth>
+impl<Auth> TryFrom<BundleRepr<'_, Auth, Owned>> for Bundle<Auth>
 where
-    Auth: BundleAuthorization,
+    Auth: BundleFromParts,
 {
-    fn from(repr: BundleRepr<'_, Auth, Owned>) -> Self {
-        Self(repr.into())
+    type Error = InvalidBundleError;
+
+    fn try_from(
+        repr: BundleRepr<'_, Auth, Owned>,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self(repr.try_into()?))
     }
 }
 
