@@ -128,6 +128,13 @@ const SHIELDED_TRANSFER_FEE: Amount =
 const UNSHIELD_AMOUNT: Amount =
     Amount::from_sat(SHIELDED_TRANSFER_AMOUNT_SATS / 2);
 
+/// Number of blocks to mine so a freshly received shielded note becomes
+/// spendable. Shielded spends anchor a few checkpoints behind the tip (a wallet
+/// privacy/reorg policy), and a note is not witnessable — hence not spendable —
+/// until it is at least that many checkpoints deep. Must be kept `>=` the
+/// wallet's `ANCHOR_CHECKPOINT_DEPTH`.
+const NOTE_MATURITY_BLOCKS: u32 = 3;
+
 async fn transfers_task(
     bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
@@ -227,6 +234,14 @@ async fn transfers_task(
                 == TRANSPARENT_TRANSFER_AMOUNT - SHIELD_AMOUNT
         );
     }
+    // Bob's note is at the tip; shielded spends anchor a few checkpoints behind
+    // the tip, so mine until the note is deep enough to be witnessable/spendable.
+    sidechain_nodes
+        .alice
+        .bmm(&mut enforcer_post_setup, NOTE_MATURITY_BLOCKS)
+        .await?;
+    // Wait for bob to sync the matured note-commitment tree
+    sleep(std::time::Duration::from_secs(5)).await;
     tracing::info!("Shielded transfer (bob -> alice)");
     let _txid = sidechain_nodes
         .bob
@@ -277,6 +292,14 @@ async fn transfers_task(
                     - (SHIELDED_TRANSFER_AMOUNT + SHIELDED_TRANSFER_FEE),
         );
     }
+    // Alice's received note is at the tip; mine until it is deep enough to be
+    // witnessable/spendable (see `NOTE_MATURITY_BLOCKS`).
+    sidechain_nodes
+        .alice
+        .bmm(&mut enforcer_post_setup, NOTE_MATURITY_BLOCKS)
+        .await?;
+    // Wait for alice's wallet to sync the matured note-commitment tree
+    sleep(std::time::Duration::from_secs(5)).await;
     tracing::info!("Unshield (alice -> alice)");
     let _txid = sidechain_nodes
         .alice
