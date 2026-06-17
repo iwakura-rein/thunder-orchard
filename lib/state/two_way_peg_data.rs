@@ -989,7 +989,11 @@ fn disconnect_event(
                 &PointedOutput { outpoint, output },
             );
             accumulator_diff.remove(utxo_hash.into());
-            *latest_deposit_block_hash = Some(event_block_hash);
+            // Events are walked in reverse here, so the first one seen is the
+            // newest block, which is what connect recorded. Keep that one.
+            if latest_deposit_block_hash.is_none() {
+                *latest_deposit_block_hash = Some(event_block_hash);
+            }
         }
         BlockEvent::WithdrawalBundle(withdrawal_bundle_event) => {
             let () = disconnect_withdrawal_bundle_event(
@@ -999,7 +1003,10 @@ fn disconnect_event(
                 accumulator_diff,
                 withdrawal_bundle_event,
             )?;
-            *latest_withdrawal_bundle_event_block_hash = Some(event_block_hash);
+            if latest_withdrawal_bundle_event_block_hash.is_none() {
+                *latest_withdrawal_bundle_event_block_hash =
+                    Some(event_block_hash);
+            }
         }
     }
     Ok(())
@@ -1108,4 +1115,96 @@ pub fn disconnect(
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::hashes::Hash as _;
+    use hashlink::LinkedHashMap;
+
+    use super::*;
+    use crate::types::{
+        Output, OutputContent, TransparentAddress,
+        proto::mainchain::{BlockInfo, Deposit},
+    };
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "thunder_orchard_2wpd_{}_{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _unused = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn deposit_block(salt: u8) -> (bitcoin::BlockHash, BlockInfo) {
+        let dep = Deposit {
+            tx_index: 0,
+            outpoint: bitcoin::OutPoint {
+                txid: bitcoin::Txid::from_byte_array([salt; 32]),
+                vout: 0,
+            },
+            output: Output {
+                address: TransparentAddress([salt; 20]),
+                content: OutputContent::Value(bitcoin::Amount::from_sat(1000)),
+            },
+        };
+        (
+            bitcoin::BlockHash::from_byte_array([salt; 32]),
+            BlockInfo {
+                bmm_commitment: None,
+                events: vec![BlockEvent::Deposit(dep)],
+            },
+        )
+    }
+
+    // A single two-way-peg batch can span multiple mainchain blocks. Connecting
+    // deposits from two distinct blocks then disconnecting the batch must
+    // restore the prior state. Before the fix, disconnect recomputed the latest
+    // deposit block hash by reverse iteration (yielding the oldest block) and
+    // panicked on the consistency assert against the newest hash connect stored.
+    #[test]
+    fn disconnect_two_deposit_blocks_restores_state() {
+        let tmp = TempDir::new();
+        let env = {
+            let mut opts = heed::EnvOpenOptions::new();
+            opts.map_size(1024 * 1024 * 1024).max_dbs(State::NUM_DBS);
+            unsafe { sneed::Env::open(&opts, &tmp.0) }.unwrap()
+        };
+        let state = State::new(&env).unwrap();
+        let mut rwtxn = env.write_txn().unwrap();
+        state.height.put(&mut rwtxn, &(), &10).unwrap();
+
+        let mut block_info = LinkedHashMap::new();
+        let (h1, b1) = deposit_block(1);
+        let (h2, b2) = deposit_block(2);
+        block_info.insert(h1, b1);
+        block_info.insert(h2, b2);
+        let tdp = TwoWayPegData { block_info };
+
+        connect(&state, &mut rwtxn, &tdp).expect("connect");
+        assert_eq!(state.utxos.len(&rwtxn).unwrap(), 2);
+        // Disconnect runs at the next height (the tip above the events).
+        state.height.put(&mut rwtxn, &(), &11).unwrap();
+        disconnect(&state, &mut rwtxn, &tdp)
+            .expect("disconnect of multi-block deposit batch");
+
+        assert_eq!(state.utxos.len(&rwtxn).unwrap(), 0);
+        assert_eq!(state.deposit_blocks.len(&rwtxn).unwrap(), 0);
+    }
 }
