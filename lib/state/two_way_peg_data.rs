@@ -1109,3 +1109,110 @@ pub fn disconnect(
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use bitcoin::hashes::Hash as _;
+
+    use super::*;
+    use crate::types::{
+        Output, OutputContent, TransparentAddress, WithdrawalBundle,
+        WithdrawalBundleStatus,
+    };
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "thunder_orchard_2wpd_{}_{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _unused = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_state() -> (TempDir, sneed::Env, State) {
+        let tmp = TempDir::new();
+        let env = {
+            let mut opts = heed::EnvOpenOptions::new();
+            opts.map_size(1024 * 1024 * 1024).max_dbs(State::NUM_DBS);
+            unsafe { sneed::Env::open(&opts, &tmp.0) }.unwrap()
+        };
+        let state = State::new(&env).unwrap();
+        (tmp, env, state)
+    }
+
+    // Disconnecting a failed known withdrawal bundle must re-spend the utxos
+    // that the failure had restored. The inverted utxo delete check returned
+    // NoUtxo on success, aborting any reorg across the failed bundle.
+    #[test]
+    fn disconnect_failed_known_bundle_respends_utxos() {
+        let (_tmp, env, state) = test_state();
+        let mut rwtxn = env.write_txn().unwrap();
+
+        let outpoint = OutPoint::Deposit(bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([1; 32]),
+            vout: 0,
+        });
+        let output = Output {
+            address: TransparentAddress([2; 20]),
+            content: OutputContent::Value(bitcoin::Amount::from_sat(10_000)),
+        };
+        let mut spend_utxos = BTreeMap::new();
+        spend_utxos.insert(outpoint, output.clone());
+        let bundle = WithdrawalBundle::new(
+            1,
+            bitcoin::Amount::from_sat(1_000),
+            spend_utxos,
+            vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(9_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        )
+        .unwrap();
+        let m6id = bundle.compute_m6id();
+
+        // Bundle was submitted at height 0, then failed at height 1.
+        let mut status = RollBack::new(WithdrawalBundleStatus::Submitted, 0);
+        status.push(WithdrawalBundleStatus::Failed, 1).unwrap();
+        state
+            .withdrawal_bundles
+            .put(
+                &mut rwtxn,
+                &m6id,
+                &(WithdrawalBundleInfo::Known(bundle), status),
+            )
+            .unwrap();
+        state
+            .latest_failed_withdrawal_bundle
+            .put(&mut rwtxn, &(), &RollBack::new(m6id, 1))
+            .unwrap();
+        // The failure had restored this utxo.
+        let key = OutPointKey::from(outpoint);
+        state.utxos.put(&mut rwtxn, &key, &output).unwrap();
+
+        let mut diff = AccumulatorDiff::default();
+        disconnect_withdrawal_bundle_failed(
+            &state, &mut rwtxn, 1, &mut diff, m6id,
+        )
+        .expect("disconnect of failed bundle should succeed");
+
+        assert!(state.utxos.try_get(&rwtxn, &key).unwrap().is_none());
+        assert!(state.stxos.try_get(&rwtxn, &key).unwrap().is_some());
+    }
+}
