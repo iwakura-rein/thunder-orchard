@@ -1109,3 +1109,107 @@ pub fn disconnect(
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::hashes::Hash as _;
+    use hashlink::LinkedHashMap;
+
+    use super::*;
+    use crate::types::{
+        M6id, WithdrawalBundleEvent, WithdrawalBundleEventStatus,
+        WithdrawalBundleStatus, proto::mainchain::BlockInfo,
+    };
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "thunder_orchard_2wpd_{}_{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _unused = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_state() -> (TempDir, sneed::Env, State) {
+        let tmp = TempDir::new();
+        let env = {
+            let mut opts = heed::EnvOpenOptions::new();
+            opts.map_size(1024 * 1024 * 1024).max_dbs(State::NUM_DBS);
+            unsafe { sneed::Env::open(&opts, &tmp.0) }.unwrap()
+        };
+        let state = State::new(&env).unwrap();
+        (tmp, env, state)
+    }
+
+    // Disconnecting a withdrawal bundle event block must trim the entry from
+    // withdrawal_bundle_event_blocks. The disconnect used to delete from
+    // deposit_blocks instead, aborting the reorg (or corrupting deposit state).
+    #[test]
+    fn disconnect_trims_withdrawal_bundle_event_block() {
+        let (_tmp, env, state) = test_state();
+        let mut rwtxn = env.write_txn().unwrap();
+
+        let m6id = M6id(bitcoin::Txid::from_byte_array([3; 32]));
+        let event_block_hash = bitcoin::BlockHash::from_byte_array([4; 32]);
+
+        // State as left by `connect` of an unknown bundle submission at the
+        // tip (height 2), recorded at height 1.
+        state
+            .withdrawal_bundles
+            .put(
+                &mut rwtxn,
+                &m6id,
+                &(
+                    WithdrawalBundleInfo::Unknown,
+                    RollBack::new(WithdrawalBundleStatus::Submitted, 2),
+                ),
+            )
+            .unwrap();
+        state
+            .withdrawal_bundle_event_blocks
+            .put(&mut rwtxn, &0, &(event_block_hash, 1))
+            .unwrap();
+        state.height.put(&mut rwtxn, &(), &2).unwrap();
+
+        let mut block_info = LinkedHashMap::new();
+        block_info.insert(
+            event_block_hash,
+            BlockInfo {
+                bmm_commitment: None,
+                events: vec![BlockEvent::WithdrawalBundle(
+                    WithdrawalBundleEvent {
+                        m6id,
+                        status: WithdrawalBundleEventStatus::Submitted,
+                    },
+                )],
+            },
+        );
+        let two_way_peg_data = TwoWayPegData { block_info };
+
+        disconnect(&state, &mut rwtxn, &two_way_peg_data)
+            .expect("disconnect of withdrawal bundle event should succeed");
+
+        assert!(
+            state
+                .withdrawal_bundle_event_blocks
+                .try_get(&rwtxn, &0)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
