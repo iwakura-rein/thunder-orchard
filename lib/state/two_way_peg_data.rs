@@ -989,7 +989,11 @@ fn disconnect_event(
                 &PointedOutput { outpoint, output },
             );
             accumulator_diff.remove(utxo_hash.into());
-            *latest_deposit_block_hash = Some(event_block_hash);
+            // Events are walked in reverse here, so the first one seen is the
+            // newest block, which is what connect recorded. Keep that one.
+            if latest_deposit_block_hash.is_none() {
+                *latest_deposit_block_hash = Some(event_block_hash);
+            }
         }
         BlockEvent::WithdrawalBundle(withdrawal_bundle_event) => {
             let () = disconnect_withdrawal_bundle_event(
@@ -999,7 +1003,10 @@ fn disconnect_event(
                 accumulator_diff,
                 withdrawal_bundle_event,
             )?;
-            *latest_withdrawal_bundle_event_block_hash = Some(event_block_hash);
+            if latest_withdrawal_bundle_event_block_hash.is_none() {
+                *latest_withdrawal_bundle_event_block_hash =
+                    Some(event_block_hash);
+            }
         }
     }
     Ok(())
