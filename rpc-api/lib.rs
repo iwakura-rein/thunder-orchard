@@ -4,17 +4,26 @@ use std::net::SocketAddr;
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
+use serde::{Deserialize, Serialize};
 use thunder_orchard::{
     net::Peer,
     types::{
-        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        ShieldedAddress, SpentOutput, TransparentAddress, Txid,
+        BlockHash, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
         WithdrawalBundle, schema as thunder_orchard_schema,
     },
     wallet::Balance,
 };
+use utoipa::ToSchema;
 
 mod schema;
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct GetTransactionResponse {
+    pub tx: Transaction,
+    /// Block hash, if in the active chain
+    pub block_hash: Option<BlockHash>,
+}
 
 #[open_api(ref_schemas[
     MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
@@ -121,6 +130,13 @@ pub trait Rpc {
     async fn get_shielded_wallet_addresses(
         &self,
     ) -> RpcResult<Vec<thunder_orchard::types::orchard::Address>>;
+
+    /// Get transaction by txid
+    #[method(name = "get_transaction")]
+    async fn get_transaction(
+        &self,
+        txid: Txid,
+    ) -> RpcResult<Option<GetTransactionResponse>>;
 
     /// Get transparent wallet addresses, sorted by base58 encoding
     #[method(name = "get_transparent_wallet_addresses")]

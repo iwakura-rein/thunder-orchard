@@ -48,6 +48,8 @@ pub enum Command {
     GetNewTransparentAddress,
     /// Get shielded wallet addresses, sorted by bech32m encoding
     GetShieldedWalletAddresses,
+    /// Get transaction by txid
+    GetTransaction { txid: Txid },
     /// Get transparent wallet addresses, sorted by base58 encoding
     GetTransparentWalletAddresses,
     /// Get wallet STXOs
@@ -213,6 +215,10 @@ where
         Command::GetShieldedWalletAddresses => {
             let addresses = rpc_client.get_shielded_wallet_addresses().await?;
             serde_json::to_string_pretty(&addresses)?
+        }
+        Command::GetTransaction { txid } => {
+            let tx_info = rpc_client.get_transaction(txid).await?;
+            serde_json::to_string_pretty(&tx_info)?
         }
         Command::GetTransparentWalletAddresses => {
             let addresses =

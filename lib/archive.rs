@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
 };
 
@@ -13,8 +13,8 @@ use sneed::{
 };
 
 use crate::types::{
-    Accumulator, BlockHash, BmmResult, Body, Header, Tip, VERSION, Version,
-    orchard, proto::mainchain,
+    Accumulator, BlockHash, BmmResult, Body, Header, Tip, Txid, VERSION,
+    Version, orchard, proto::mainchain,
 };
 
 #[allow(clippy::duplicated_attributes)]
@@ -154,11 +154,16 @@ pub struct Archive {
         SerdeBincode<bitcoin::BlockHash>,
         SerdeBincode<bitcoin::Work>,
     >,
+    /// Blocks in which a tx has been included, and index within the block
+    txid_to_inclusions: DatabaseUnique<
+        SerdeBincode<Txid>,
+        SerdeBincode<BTreeMap<BlockHash, u32>>,
+    >,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 15;
+    pub const NUM_DBS: u32 = 16;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn()?;
@@ -170,10 +175,12 @@ impl Archive {
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 12,
+                        minor: 16,
                         patch: 0,
                     } =>
             {
+                // `txid_to_inclusions` added in 0.16.0
+                // Merkle root structure changed in 0.13.0
                 // `deposits` and `main_bmm_commitments` were removed in
                 // 0.12.0, and `main_block_infos` was added
                 return Err(Error::IncompatibleVersion {
@@ -236,6 +243,8 @@ impl Archive {
             successors.put(&mut rwtxn, &None, &HashSet::new())?;
         }
         let total_work = DatabaseUnique::create(env, &mut rwtxn, "total_work")?;
+        let txid_to_inclusions =
+            DatabaseUnique::create(env, &mut rwtxn, "txid_to_inclusions")?;
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             accumulators,
@@ -252,6 +261,7 @@ impl Archive {
             orchard_frontiers,
             successors,
             total_work,
+            txid_to_inclusions,
             _version: version,
         })
     }
@@ -488,6 +498,19 @@ impl Archive {
             .ok_or(Error::NoMainHeaderInfo(block_hash))
     }
 
+    /// Get blocks in which a tx was included, and tx index within each block
+    pub fn get_tx_inclusions(
+        &self,
+        rotxn: &RoTxn,
+        txid: Txid,
+    ) -> Result<BTreeMap<BlockHash, u32>, Error> {
+        let inclusions = self
+            .txid_to_inclusions
+            .try_get(rotxn, &txid)?
+            .unwrap_or_default();
+        Ok(inclusions)
+    }
+
     /// Try to get the best valid mainchain verification for the specified block.
     pub fn try_get_best_main_verification(
         &self,
@@ -672,12 +695,20 @@ impl Archive {
         block_hash: BlockHash,
         body: &Body,
     ) -> Result<(), Error> {
-        let header = self.get_header(rwtxn, block_hash)?;
-        if header.merkle_root != body.compute_merkle_root() {
-            return Err(Error::InvalidMerkleRoot);
-        }
-        self.bodies.put(rwtxn, &block_hash, body)?;
-        Ok(())
+        let _header = self.get_header(rwtxn, block_hash)?;
+        self.bodies
+            .put(rwtxn, &block_hash, body)
+            .map_err(DbError::from)?;
+        body.transactions
+            .iter()
+            .enumerate()
+            .try_for_each(|(txin, tx)| {
+                let txid = tx.txid();
+                let mut inclusions = self.get_tx_inclusions(rwtxn, txid)?;
+                inclusions.insert(block_hash, txin as u32);
+                self.txid_to_inclusions.put(rwtxn, &txid, &inclusions)?;
+                Ok(())
+            })
     }
 
     /// Store a header.

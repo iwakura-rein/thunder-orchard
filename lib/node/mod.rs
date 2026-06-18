@@ -7,7 +7,7 @@ use std::{
 };
 
 use bitcoin::amount::CheckedSum;
-use fallible_iterator::FallibleIterator as _;
+use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{Stream, future::BoxFuture};
 use heed::EnvFlags;
 use sneed::{DbError, Env, EnvError, RoTxn, RwTxnError, env};
@@ -510,6 +510,41 @@ where
         }
         txn.commit().map_err(RwTxnError::from)?;
         Ok((returned_transactions, fee))
+    }
+
+    /// Get a transaction if it exists in the active chain or mempool.
+    /// Returns the transaction and the block it was included in, if it exists
+    /// in the active chain.
+    pub fn try_get_transaction(
+        &self,
+        txid: Txid,
+    ) -> Result<Option<(Transaction, Option<BlockHash>)>, Error> {
+        let rotxn = self.env.read_txn()?;
+        let tip = self.state.try_get_tip(&rotxn).map_err(state::Error::from)?;
+        if let Some(tip) = tip
+            && let Some((block_hash, txin)) = self
+                .archive
+                .get_tx_inclusions(&rotxn, txid)?
+                .into_iter()
+                .map(Ok)
+                .transpose_into_fallible()
+                .find(|(block_hash, _idx)| {
+                    self.archive.is_descendant(&rotxn, tip, *block_hash)
+                })?
+        {
+            let body = self.archive.get_body(&rotxn, block_hash)?;
+            let tx = body.transactions.into_iter().nth(txin as usize).unwrap();
+            Ok(Some((tx, Some(block_hash))))
+        } else if let Some(auth_tx) = self
+            .mempool
+            .transactions
+            .try_get(&rotxn, &txid)
+            .map_err(mempool::Error::from)?
+        {
+            Ok(Some((auth_tx.transaction, None)))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn try_get_pending_withdrawal_bundle(
