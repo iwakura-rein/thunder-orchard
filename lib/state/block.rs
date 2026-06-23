@@ -403,13 +403,13 @@ pub fn connect_prevalidated(
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     let () = state.orchard.put_frontier(rwtxn, &frontier)?;
-    let root_changed: bool = state.orchard.put_historical_root(
+    // Archive the frontier for every block so a reorg can always restore it
+    let _root_changed: bool = state.orchard.put_historical_root(
         rwtxn,
         block_hash,
         frontier.root(),
     )?;
-    let res = if root_changed { Some(frontier) } else { None };
-    Ok(res)
+    Ok(Some(frontier))
 }
 
 /// Connect the orchard components of a transaction
@@ -550,13 +550,13 @@ pub fn connect(
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     let () = state.orchard.put_frontier(rwtxn, &frontier)?;
-    let root_changed: bool = state.orchard.put_historical_root(
+    // Archive the frontier for every block so a reorg can always restore it
+    let _root_changed: bool = state.orchard.put_historical_root(
         rwtxn,
         block_hash,
         frontier.root(),
     )?;
-    let res = if root_changed { Some(frontier) } else { None };
-    Ok(res)
+    Ok(Some(frontier))
 }
 
 /// Disconnect the orchard components of a transaction.

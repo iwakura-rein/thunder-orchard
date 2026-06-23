@@ -539,7 +539,8 @@ impl State {
 
     /// Returns data that must be archived in order to disconnect to the new
     /// tip.
-    /// Returns `Ok(Some(_))` if connecting a block changed the orchard frontier.
+    /// Returns the orchard frontier, archived for every block so a reorg can
+    /// restore it.
     pub fn connect_block(
         &self,
         rwtxn: &mut RwTxn,
