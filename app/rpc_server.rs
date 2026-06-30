@@ -14,7 +14,7 @@ use thunder_orchard::{
     },
     wallet::Balance,
 };
-use thunder_orchard_app_rpc_api::RpcServer;
+use thunder_orchard_app_rpc_api::{GetTransactionResponse, RpcServer};
 use tower_http::{
     cors::CorsLayer,
     request_id::{
@@ -185,6 +185,19 @@ impl RpcServer for RpcServerImpl {
         };
         let mut res: Vec<_> = addrs.into_iter().collect();
         res.sort_by_key(|addr| addr.bech32m_encode());
+        Ok(res)
+    }
+
+    async fn get_transaction(
+        &self,
+        txid: Txid,
+    ) -> RpcResult<Option<GetTransactionResponse>> {
+        let res = self
+            .app
+            .node
+            .try_get_transaction(txid)
+            .map_err(custom_err)?
+            .map(|(tx, block_hash)| GetTransactionResponse { tx, block_hash });
         Ok(res)
     }
 
