@@ -8,6 +8,7 @@ use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use utoipa::ToSchema;
 
 use crate::{
@@ -242,6 +243,51 @@ mod tests {
 
         Ok(())
     }
+
+    // a withdrawal output must be funded for both its payout and its mainchain
+    // fee, since both leave the treasury
+    #[test]
+    fn withdrawal_value_includes_main_fee() {
+        use super::{
+            Content, FilledTransaction, GetValue, Output, Transaction,
+        };
+        use crate::types::TransparentAddress;
+
+        let value = bitcoin::Amount::from_sat(1000);
+        let main_fee = bitcoin::Amount::from_sat(300);
+        let main_address = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+            .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .unwrap();
+        let withdrawal = Output {
+            address: TransparentAddress::ALL_ZEROS,
+            content: Content::Withdrawal {
+                value,
+                main_fee,
+                main_address,
+            },
+        };
+        assert_eq!(withdrawal.get_value(), value + main_fee);
+
+        let value_output = |amount| Output {
+            address: TransparentAddress::ALL_ZEROS,
+            content: Content::Value(amount),
+        };
+        let withdrawal_tx = |funding| FilledTransaction {
+            transaction: Transaction {
+                outputs: vec![withdrawal.clone()],
+                ..Default::default()
+            },
+            spent_utxos: vec![value_output(funding)],
+        };
+
+        // inputs covering only the payout are insufficient
+        assert!(withdrawal_tx(value).get_fee().is_err());
+        // inputs covering payout plus mainchain fee fully fund it
+        assert_eq!(
+            withdrawal_tx(value + main_fee).get_fee().unwrap(),
+            bitcoin::Amount::ZERO
+        );
+    }
 }
 
 /// Reference to a tx input.
@@ -473,7 +519,14 @@ mod content {
         fn get_value(&self) -> bitcoin::Amount {
             match self {
                 Self::Value(value) => *value,
-                Self::Withdrawal { value, .. } => *value,
+                // a withdrawal removes both the payout and the mainchain fee
+                // from the sidechain, since the enforcer pays both out of the
+                // treasury
+                Self::Withdrawal {
+                    value, main_fee, ..
+                } => {
+                    value.checked_add(*main_fee).unwrap_or(bitcoin::Amount::MAX)
+                }
             }
         }
     }
@@ -754,6 +807,19 @@ pub struct SpentOutput<O = Output> {
     pub inpoint: InPoint,
 }
 
+#[derive(Debug, Error)]
+pub enum ComputeFeeError {
+    #[error("underfunded; value in ({value_in}) < value out ({value_out})")]
+    Underfunded {
+        value_in: bitcoin::Amount,
+        value_out: bitcoin::Amount,
+    },
+    #[error("value in overflow")]
+    ValueInOverflow(#[source] AmountOverflowError),
+    #[error("value out overflow")]
+    ValueOutOverflow(#[source] AmountOverflowError),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilledTransaction {
     pub transaction: Transaction,
@@ -780,16 +846,20 @@ impl FilledTransaction {
             .ok_or(AmountOverflowError)
     }
 
-    pub fn get_fee(
-        &self,
-    ) -> Result<Option<bitcoin::Amount>, AmountOverflowError> {
-        let value_in = self.get_value_in()?;
-        let value_out = self.get_value_out()?;
-        if value_in < value_out {
-            Ok(None)
-        } else {
-            Ok(Some(value_in - value_out))
-        }
+    pub fn get_fee(&self) -> Result<bitcoin::Amount, ComputeFeeError> {
+        let value_in = self
+            .get_value_in()
+            .map_err(ComputeFeeError::ValueInOverflow)?;
+        let value_out = self
+            .get_value_out()
+            .map_err(ComputeFeeError::ValueOutOverflow)?;
+        let res = value_in.checked_sub(value_out).ok_or(
+            ComputeFeeError::Underfunded {
+                value_in,
+                value_out,
+            },
+        )?;
+        Ok(res)
     }
 }
 

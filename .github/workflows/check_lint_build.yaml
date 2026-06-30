@@ -18,7 +18,7 @@ jobs:
     name: Check, Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
       
@@ -29,8 +29,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
+        uses: Swatinem/rust-cache@v2.9.1
         with:
+          cache-bin: false
           shared-key: x86_64-unknown-linux-gnu
 
       - name: Rustfmt
@@ -95,8 +96,9 @@ jobs:
           target: x86_64-pc-windows-gnu
 
       - name: Rust Cache (electrs)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.1
         with:
+          cache-bin: false
           prefix-key: "v0-rust-electrs"
           workspaces: ../electrs -> target
 
@@ -106,13 +108,14 @@ jobs:
           cargo build --locked --release
           popd
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.1
         with:
+          cache-bin: false
           shared-key: x86_64-unknown-linux-gnu
 
       - name: Build (release)
@@ -129,7 +132,7 @@ jobs:
           export THUNDER_ORCHARD_APP='target/release/thunder_orchard_app'
           cargo run --release --example integration_tests
 
-  build-release:
+  test-build-release:
     strategy:
       fail-fast: false
       matrix:
@@ -142,17 +145,21 @@ jobs:
             name: x86_64-apple-darwin
             binary-suffix: ""
             rustflags: ""
+          - os: macos-latest
+            name: aarch64-apple-darwin
+            binary-suffix: ""
+            rustflags: ""
           #- os: ubuntu-latest
           #  name: x86_64-pc-windows-gnu
           #  binary-suffix: .exe
           #  rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
-    name: Build, Release ((${{ matrix.name }}))
+    name: Test, Build, Release ((${{ matrix.name }}))
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
       
@@ -163,13 +170,17 @@ jobs:
           target: ${{ matrix.name }}
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
+        uses: Swatinem/rust-cache@v2.9.1
         with:
+          cache-bin: false
           key: ${{ matrix.name }}
 
       - name: Install windows-specific deps
         run: sudo apt install mingw-w64
         if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
+
+      - name: Test
+        run: cargo test --tests
 
       - name: Build
         run: cargo build --release --target ${{ matrix.name }}
@@ -194,13 +205,26 @@ jobs:
           popd
 
       - name: 'Upload Artifacts (thunder-orchard)'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.THUNDER_ORCHARD_APP_FILENAME }}
           if-no-files-found: error
           path: |
             target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_APP_FILENAME }}
             target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_CLI_FILENAME }}
+
+      - name: Extract Git tag name
+        id: git-tag-name
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "git_tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Parse Git tag name as semver
+        uses: madhead/semver-utils@v5.0.0
+        if: startsWith(github.ref, 'refs/tags/')
+        id: parse-git-tag-name-semver
+        with:
+          version: ${{ steps.git-tag-name.outputs.git_tag_name }}
 
       - name: Release
         uses: softprops/action-gh-release@v2.0.2
@@ -210,15 +234,34 @@ jobs:
             target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_APP_FILENAME }}
             target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_CLI_FILENAME }}
           fail_on_unmatched_files: true
+          prerelease: ${{ steps.parse-git-tag-name-semver.outputs.prerelease != '' }}
+
+  parse-semver:
+    name: Parse version info
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    outputs:
+      prerelease: ${{ steps.parse-git-tag-name-semver.outputs.prerelease }}
+    steps:
+      - name: Extract Git tag name
+        id: git-tag-name
+        run: |
+          echo "git_tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Parse Git tag name as semver
+        uses: madhead/semver-utils@v5.0.0
+        id: parse-git-tag-name-semver
+        with:
+          version: ${{ steps.git-tag-name.outputs.git_tag_name }}
 
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
     runs-on: ubuntu-latest
-    needs: [build-release, integration-test]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [integration-test, test-build-release, parse-semver]
+    if: startsWith(github.ref, 'refs/tags/') && needs.parse-semver.outputs.prerelease == ''
     steps:
       - name: Download release assets
-        uses: robinraju/release-downloader@v1.9
+        uses: robinraju/release-downloader@v1.13
         with:
           tag: ${{ github.ref_name }}
 
@@ -230,6 +273,11 @@ jobs:
           zip L2-S9-Thunder-Orchard-latest-x86_64-apple-darwin.zip \
             thunder-orchard-latest-x86_64-apple-darwin \
             thunder-orchard-cli-latest-x86_64-apple-darwin
+          mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-aarch64-apple-darwin thunder-orchard-latest-aarch64-apple-darwin
+          mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-aarch64-apple-darwin thunder-orchard-cli-latest-aarch64-apple-darwin
+          zip L2-S9-Thunder-Orchard-latest-aarch64-apple-darwin.zip \
+            thunder-orchard-latest-aarch64-apple-darwin \
+            thunder-orchard-cli-latest-aarch64-apple-darwin
           #mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-latest-x86_64-pc-windows-gnu.exe
           #mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-cli-latest-x86_64-pc-windows-gnu.exe
           #zip L2-S9-Thunder-Orchard-latest-x86_64-pc-windows-gnu.zip \

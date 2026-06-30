@@ -707,7 +707,7 @@ impl Wallet {
                 .checked_add(main_fee)
                 .ok_or(AmountOverflowError)?,
         )?;
-        let change = total - value - fee;
+        let change = total - value - fee - main_fee;
 
         let inputs: Vec<_> = coins
             .into_iter()
@@ -1671,6 +1671,50 @@ impl Wallet {
         })
     }
 
+    /// Gets the latest generated Orchard address.
+    pub fn try_get_last_orchard_address(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<orchard::Address>, Error> {
+        let last = self.orchard_index_to_address.last(rotxn)?;
+        Ok(last.map(|(_, address)| address))
+    }
+
+    /// Gets the latest generated transparent address.
+    pub fn try_get_last_transparent_address(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<TransparentAddress>, Error> {
+        let last = self.index_to_address.last(rotxn)?;
+        Ok(last.map(|(_, address)| address))
+    }
+
+    /// Gets the latest generated Orchard address, or generates a new one if no
+    /// Orchard addresses have already been generated.
+    pub fn get_or_generate_last_orchard_address(
+        &self,
+        rwtxn: &mut RwTxn,
+    ) -> Result<orchard::Address, Error> {
+        if let Some(address) = self.try_get_last_orchard_address(rwtxn)? {
+            Ok(address)
+        } else {
+            self.get_new_orchard_address(rwtxn)
+        }
+    }
+
+    /// Gets the latest generated transparent address, or generates a new one
+    /// if no transparent addresses have already been generated.
+    pub fn get_or_generate_last_transparent_address(
+        &self,
+        rwtxn: &mut RwTxn,
+    ) -> Result<TransparentAddress, Error> {
+        if let Some(address) = self.try_get_last_transparent_address(rwtxn)? {
+            Ok(address)
+        } else {
+            self.get_new_transparent_address(rwtxn)
+        }
+    }
+
     pub fn get_num_addresses(&self) -> Result<u32, Error> {
         let txn = self.env.read_txn().map_err(EnvError::from)?;
         let (last_index, _) = self
@@ -1904,160 +1948,4 @@ impl MeltBatch {
 }
 
 #[cfg(test)]
-mod fee_privacy_tests {
-    use super::*;
-
-    fn bill_exponents(cast: &Cast) -> Vec<u32> {
-        cast.bill_exponents_with_timestamps
-            .iter()
-            .map(|(exp, _ts)| *exp)
-            .collect()
-    }
-
-    /// A cast decomposes the amount into power-of-two "bill" denominations
-    /// (one per set bit), with no fee folded into the bill amounts. This keeps
-    /// each bill a standard denomination shared across users.
-    #[test]
-    fn cast_decomposes_into_standard_denominations() {
-        for sats in [1u64, 0b1011, 1_000_000, (1 << 20) + (1 << 5) + 1] {
-            let cast = Cast::new(Amount::from_sat(sats));
-            let mut exps = bill_exponents(&cast);
-            exps.sort_unstable();
-            let expected: Vec<u32> =
-                (0..u64::BITS).filter(|i| (sats >> i) & 1 == 1).collect();
-            assert_eq!(exps, expected, "bills must be the set bits of {sats}");
-            let sum: u64 = exps.iter().map(|exp| 1u64 << exp).sum();
-            assert_eq!(sum, sats, "bills must sum back to the amount");
-        }
-    }
-
-    /// Privacy regression: the fee an observer can derive from a cast
-    /// transaction (value_balance - transparent_output) is the same shared
-    /// `STANDARD_FEE` for every bill and every cast, regardless of the amount.
-    /// A per-user or per-amount fee would be a fingerprint linking a cast's
-    /// bills together. The fee is not a caller-supplied parameter.
-    #[test]
-    fn all_cast_bills_use_the_same_shared_fee() {
-        assert_eq!(Cast::tx_fee(), STANDARD_FEE);
-
-        // Footprint of a bill as seen on chain: an unshield of denomination
-        // `2^exp` has transparent output `2^exp` and value balance
-        // `2^exp + fee`, so the observer-derived fee is exactly the fee used.
-        let observed_fees = |sats: u64| -> Vec<Amount> {
-            let cast = Cast::new(Amount::from_sat(sats));
-            bill_exponents(&cast)
-                .into_iter()
-                .map(|exp| {
-                    let denom = Amount::from_sat(1 << exp);
-                    let value_balance = denom + Cast::tx_fee();
-                    value_balance - denom
-                })
-                .collect()
-        };
-
-        // Different amounts (e.g. two different users), all bills, one fee.
-        for sats in [0b1011u64, 1_000_000, 12_345_678] {
-            for fee in observed_fees(sats) {
-                assert_eq!(
-                    fee, STANDARD_FEE,
-                    "every cast bill must use the shared standard fee"
-                );
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod melt_privacy_tests {
-    use super::*;
-
-    fn bill_exponents(melt: &MeltBatch) -> Vec<u32> {
-        melt.bill_exponents_with_timestamps
-            .iter()
-            .map(|(exp, _ts)| *exp)
-            .collect()
-    }
-
-    /// A melt decomposes the amount into power-of-two "bill" denominations
-    /// (one shield transaction per set bit). Each transaction therefore shields
-    /// a standard denomination `2^n`, so its publicly visible value balance no
-    /// longer reveals the exact value of a source UTXO.
-    #[test]
-    fn melt_decomposes_into_standard_denominations() {
-        for sats in [1u64, 0b1011, 1_000_000, (1 << 20) + (1 << 5) + 1] {
-            let melt = MeltBatch::new(Amount::from_sat(sats));
-            let mut exps = bill_exponents(&melt);
-            exps.sort_unstable();
-            let expected: Vec<u32> =
-                (0..u64::BITS).filter(|i| (sats >> i) & 1 == 1).collect();
-            assert_eq!(
-                exps, expected,
-                "melt bills must be the set bits of {sats}"
-            );
-            let sum: u64 = exps.iter().map(|exp| 1u64 << exp).sum();
-            assert_eq!(sum, sats, "melt bills must sum back to the amount");
-        }
-    }
-
-    /// Every melt transaction uses the shared standard fee, independent of the
-    /// amount, so melt transactions cannot be linked by a per-user fee.
-    #[test]
-    fn melt_uses_shared_standard_fee() {
-        assert_eq!(MeltBatch::tx_fee(), STANDARD_FEE);
-    }
-}
-
-#[cfg(test)]
-mod anchor_depth_tests {
-    use super::*;
-    use std::convert::Infallible;
-
-    /// Pick the anchor depth for a tree with `checkpoints` checkpoints: a
-    /// checkpoint exists at depth `d` iff `d < checkpoints`.
-    fn pick(checkpoints: usize, max_depth: usize) -> Option<usize> {
-        deepest_available_anchor_depth(max_depth, |depth| {
-            Ok::<bool, Infallible>(depth < checkpoints)
-        })
-        .unwrap()
-    }
-
-    /// With enough history, spends anchor at the full target depth, i.e. behind
-    /// the tip (depth 0), not at it.
-    #[test]
-    fn anchors_behind_the_tip_when_history_is_deep() {
-        const { assert!(ANCHOR_CHECKPOINT_DEPTH > 0, "must not anchor at the tip") };
-        assert_eq!(
-            pick(100, ANCHOR_CHECKPOINT_DEPTH),
-            Some(ANCHOR_CHECKPOINT_DEPTH)
-        );
-        assert_eq!(pick(10, 3), Some(3));
-    }
-
-    /// While the tree is young, fall back to the deepest available checkpoint.
-    #[test]
-    fn falls_back_to_deepest_available_when_young() {
-        assert_eq!(pick(1, 3), Some(0)); // only the tip checkpoint exists
-        assert_eq!(pick(2, 3), Some(1));
-        assert_eq!(pick(3, 3), Some(2));
-        assert_eq!(pick(4, 3), Some(3));
-    }
-
-    /// No checkpoints (empty tree) yields no anchor depth.
-    #[test]
-    fn no_checkpoints_yields_none() {
-        assert_eq!(pick(0, 3), None);
-        assert_eq!(pick(0, 0), None);
-    }
-
-    /// Privacy property: whenever more than one checkpoint exists, the chosen
-    /// anchor is strictly behind the tip.
-    #[test]
-    fn never_anchors_at_tip_when_history_exists() {
-        for checkpoints in 2..=20 {
-            let depth = pick(checkpoints, ANCHOR_CHECKPOINT_DEPTH).unwrap();
-            assert!(depth >= 1, "anchor must be behind the tip");
-            assert!(depth <= ANCHOR_CHECKPOINT_DEPTH);
-            assert!(depth < checkpoints);
-        }
-    }
-}
+mod test;

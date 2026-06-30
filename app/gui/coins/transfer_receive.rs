@@ -165,9 +165,11 @@ impl Receive {
         };
         let addresses = (|| {
             let mut rwtxn = app.wallet.env().write_txn()?;
-            let shielded = app.wallet.get_new_orchard_address(&mut rwtxn);
-            let transparent =
-                app.wallet.get_new_transparent_address(&mut rwtxn);
+            let shielded =
+                app.wallet.get_or_generate_last_orchard_address(&mut rwtxn);
+            let transparent = app
+                .wallet
+                .get_or_generate_last_transparent_address(&mut rwtxn);
             let addresses = Addresses {
                 shielded: shielded.map_err(anyhow::Error::from),
                 transparent: transparent.map_err(anyhow::Error::from),
