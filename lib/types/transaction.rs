@@ -8,6 +8,7 @@ use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use utoipa::ToSchema;
 
 use crate::{
@@ -754,6 +755,19 @@ pub struct SpentOutput<O = Output> {
     pub inpoint: InPoint,
 }
 
+#[derive(Debug, Error)]
+pub enum ComputeFeeError {
+    #[error("underfunded; value in ({value_in}) < value out ({value_out})")]
+    Underfunded {
+        value_in: bitcoin::Amount,
+        value_out: bitcoin::Amount,
+    },
+    #[error("value in overflow")]
+    ValueInOverflow(#[source] AmountOverflowError),
+    #[error("value out overflow")]
+    ValueOutOverflow(#[source] AmountOverflowError),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilledTransaction {
     pub transaction: Transaction,
@@ -780,16 +794,20 @@ impl FilledTransaction {
             .ok_or(AmountOverflowError)
     }
 
-    pub fn get_fee(
-        &self,
-    ) -> Result<Option<bitcoin::Amount>, AmountOverflowError> {
-        let value_in = self.get_value_in()?;
-        let value_out = self.get_value_out()?;
-        if value_in < value_out {
-            Ok(None)
-        } else {
-            Ok(Some(value_in - value_out))
-        }
+    pub fn get_fee(&self) -> Result<bitcoin::Amount, ComputeFeeError> {
+        let value_in = self
+            .get_value_in()
+            .map_err(ComputeFeeError::ValueInOverflow)?;
+        let value_out = self
+            .get_value_out()
+            .map_err(ComputeFeeError::ValueOutOverflow)?;
+        let res = value_in.checked_sub(value_out).ok_or(
+            ComputeFeeError::Underfunded {
+                value_in,
+                value_out,
+            },
+        )?;
+        Ok(res)
     }
 }
 
