@@ -7478,7 +7478,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_orchard"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-lock",
@@ -7541,7 +7541,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_orchard_app"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -7584,7 +7584,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_orchard_app_cli"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -7604,7 +7604,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_orchard_app_rpc_api"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "bitcoin",
  "jsonrpsee 0.25.1",
@@ -7617,7 +7617,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_orchard_integration_tests"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "bip300301_enforcer_integration_tests",
