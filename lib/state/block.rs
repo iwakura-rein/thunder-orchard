@@ -628,6 +628,8 @@ fn disconnect_transaction(
         })
 }
 
+/// `prev_note_commitments_merkle_frontier` MUST be `Some(_)` iff
+/// the tip being disconnected changed the frontier.
 pub fn disconnect_tip(
     state: &State,
     rwtxn: &mut RwTxn,

@@ -1455,6 +1455,29 @@ impl Archive {
             }
         }
     }
+
+    /// Get the orchard frontier for a block in the active chain.
+    /// If the block has never been in the active chain, the result may be
+    /// incorrect.
+    pub fn get_orchard_frontier(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: Option<BlockHash>,
+    ) -> Result<orchard::Frontier, Error> {
+        let res = if let Some(block_hash) = block_hash
+            && let Some(res) =
+                self.ancestors(rotxn, block_hash).find_map(|block_hash| {
+                    let frontier = self
+                        .orchard_frontiers
+                        .try_get(rotxn, &Some(block_hash))?;
+                    Ok(frontier)
+                })? {
+            res
+        } else {
+            self.orchard_frontiers.get(rotxn, &None)?
+        };
+        Ok(res)
+    }
 }
 
 /// Return a fallible iterator over ancestor headers of a block,
@@ -1591,5 +1614,142 @@ impl FallibleIterator for AncestorsRev<'_, '_> {
         } else {
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::hashes::Hash as _;
+
+    use super::*;
+    use crate::types::{Body, orchard as o};
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "thunder_orchard_archive_test_{}_{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _unused = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn arbitrary_cmx() -> o::ExtractedNoteCommitment {
+        loop {
+            let bytes: [u8; 32] = rand::random();
+            if let Some(cmx) =
+                ::orchard::note::ExtractedNoteCommitment::from_bytes(&bytes)
+                    .into_option()
+            {
+                return o::ExtractedNoteCommitment::from(cmx);
+            }
+        }
+    }
+
+    fn empty_header(prev_side_hash: Option<BlockHash>) -> Header {
+        let body = Body::new(Vec::new(), Vec::new());
+        Header {
+            merkle_root: body.compute_merkle_root(),
+            prev_side_hash,
+            prev_main_hash: bitcoin::BlockHash::all_zeros(),
+            roots: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn get_orchard_frontier_walks_past_unchanged_blocks() {
+        let tmp = TempDir::new();
+        let env = {
+            let mut opts = heed::EnvOpenOptions::new();
+            opts.map_size(1024 * 1024 * 1024).max_dbs(Archive::NUM_DBS);
+            unsafe { sneed::Env::open(&opts, &tmp.0) }.unwrap()
+        };
+        let archive = Archive::new(&env).unwrap();
+
+        let cmx_a = arbitrary_cmx();
+        let cmx_b = arbitrary_cmx();
+        let mut frontier_1 = o::Frontier::empty();
+        assert!(frontier_1.append(&cmx_a));
+        let mut frontier_3 = o::Frontier::empty();
+        assert!(frontier_3.append(&cmx_a));
+        assert!(frontier_3.append(&cmx_b));
+
+        // genesis -> block_1 (orchard tx, root changes)
+        //         -> block_2 (transparent-only, root unchanged)
+        //         -> block_3 (orchard tx, root changes)
+        let header_1 = empty_header(None);
+        let block_1 = header_1.hash();
+        let header_2 = empty_header(Some(block_1));
+        let block_2 = header_2.hash();
+        let header_3 = empty_header(Some(block_2));
+        let block_3 = header_3.hash();
+
+        let mut rwtxn = env.write_txn().unwrap();
+        archive.put_header(&mut rwtxn, &header_1).unwrap();
+        archive.put_header(&mut rwtxn, &header_2).unwrap();
+        archive.put_header(&mut rwtxn, &header_3).unwrap();
+        archive
+            .put_orchard_frontier(&mut rwtxn, block_1, &frontier_1)
+            .unwrap();
+        archive
+            .put_orchard_frontier(&mut rwtxn, block_3, &frontier_3)
+            .unwrap();
+        rwtxn.commit().unwrap();
+
+        let rotxn = env.read_txn().unwrap();
+
+        assert!(
+            archive
+                .orchard_frontiers()
+                .contains_key(&rotxn, &Some(block_3))
+                .unwrap()
+        );
+        assert!(
+            !archive
+                .orchard_frontiers()
+                .contains_key(&rotxn, &Some(block_2))
+                .unwrap()
+        );
+
+        assert_eq!(
+            archive
+                .get_orchard_frontier(&rotxn, Some(block_3))
+                .unwrap()
+                .root(),
+            frontier_3.root(),
+        );
+        assert_eq!(
+            archive
+                .get_orchard_frontier(&rotxn, Some(block_1))
+                .unwrap()
+                .root(),
+            frontier_1.root(),
+        );
+        // block_2 changed no root, so it must resolve to block_1's frontier.
+        assert_eq!(
+            archive
+                .get_orchard_frontier(&rotxn, Some(block_2))
+                .unwrap()
+                .root(),
+            frontier_1.root(),
+        );
+        assert_eq!(
+            archive.get_orchard_frontier(&rotxn, None).unwrap().root(),
+            o::Frontier::empty().root(),
+        );
     }
 }
