@@ -233,10 +233,17 @@ fn disconnect_tip_(
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
     let prev_accumulator =
         archive.get_accumulator(rwtxn, &tip_header.prev_side_hash)?;
-    let prev_frontier = archive
+    let prev_frontier = if archive
         .orchard_frontiers()
-        .try_get(rwtxn, &tip_header.prev_side_hash)
-        .map_err(archive::Error::from)?;
+        .contains_key(rwtxn, &Some(tip_block_hash))
+        .map_err(archive::Error::from)?
+    {
+        let prev_frontier =
+            archive.get_orchard_frontier(rwtxn, tip_header.prev_side_hash)?;
+        Some(prev_frontier)
+    } else {
+        None
+    };
     let () = state.disconnect_tip(
         rwtxn,
         &tip_header,

@@ -403,13 +403,13 @@ pub fn connect_prevalidated(
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     let () = state.orchard.put_frontier(rwtxn, &frontier)?;
-    // Archive the frontier for every block so a reorg can always restore it
-    let _root_changed: bool = state.orchard.put_historical_root(
+    let root_changed: bool = state.orchard.put_historical_root(
         rwtxn,
         block_hash,
         frontier.root(),
     )?;
-    Ok(Some(frontier))
+    let res = if root_changed { Some(frontier) } else { None };
+    Ok(res)
 }
 
 /// Connect the orchard components of a transaction
@@ -550,13 +550,13 @@ pub fn connect(
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     let () = state.orchard.put_frontier(rwtxn, &frontier)?;
-    // Archive the frontier for every block so a reorg can always restore it
-    let _root_changed: bool = state.orchard.put_historical_root(
+    let root_changed: bool = state.orchard.put_historical_root(
         rwtxn,
         block_hash,
         frontier.root(),
     )?;
-    Ok(Some(frontier))
+    let res = if root_changed { Some(frontier) } else { None };
+    Ok(res)
 }
 
 /// Disconnect the orchard components of a transaction.
@@ -628,6 +628,8 @@ fn disconnect_transaction(
         })
 }
 
+/// `prev_note_commitments_merkle_frontier` MUST be `Some(_)` iff
+/// the tip being disconnected changed the frontier.
 pub fn disconnect_tip(
     state: &State,
     rwtxn: &mut RwTxn,

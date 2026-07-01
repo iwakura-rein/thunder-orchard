@@ -1455,6 +1455,29 @@ impl Archive {
             }
         }
     }
+
+    /// Get the orchard frontier for a block in the active chain.
+    /// If the block has never been in the active chain, the result may be
+    /// incorrect.
+    pub fn get_orchard_frontier(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: Option<BlockHash>,
+    ) -> Result<orchard::Frontier, Error> {
+        let res = if let Some(block_hash) = block_hash
+            && let Some(res) =
+                self.ancestors(rotxn, block_hash).find_map(|block_hash| {
+                    let frontier = self
+                        .orchard_frontiers
+                        .try_get(rotxn, &Some(block_hash))?;
+                    Ok(frontier)
+                })? {
+            res
+        } else {
+            self.orchard_frontiers.get(rotxn, &None)?
+        };
+        Ok(res)
+    }
 }
 
 /// Return a fallible iterator over ancestor headers of a block,

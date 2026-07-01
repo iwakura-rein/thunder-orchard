@@ -539,8 +539,7 @@ impl State {
 
     /// Returns data that must be archived in order to disconnect to the new
     /// tip.
-    /// Returns the orchard frontier, archived for every block so a reorg can
-    /// restore it.
+    /// Returns `Ok(Some(_))` if connecting a block changed the orchard frontier.
     pub fn connect_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -606,6 +605,8 @@ impl State {
         self.connect_prevalidated_block(rwtxn, header, body, prevalidated)
     }
 
+    /// `prev_note_commitments_merkle_frontier` MUST be `Some(_)` iff
+    /// the tip being disconnected changed the frontier.
     pub fn disconnect_tip(
         &self,
         rwtxn: &mut RwTxn,
