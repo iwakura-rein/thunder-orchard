@@ -1124,7 +1124,7 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
                 .take_while(|(pos, seq)| {
                     let pos = pos.as_ref().map(|pos| pos.0);
                     Ok(pos > checkpoint_pos
-                        || (pos == checkpoint_pos && *seq >= checkpoint_seq))
+                        || (pos == checkpoint_pos && *seq > checkpoint_seq))
                 })
                 .collect()?;
             for (pos, seq) in checkpoints_to_delete {
