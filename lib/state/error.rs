@@ -265,6 +265,8 @@ pub enum Error {
     NotEnoughValueIn,
     #[error(transparent)]
     NoUtxo(#[from] NoUtxo),
+    #[error("withdrawal output cannot be spent by a transaction")]
+    SpendWithdrawalOutput,
     #[error("Withdrawal bundle event block doesn't exist")]
     NoWithdrawalBundleEventBlock,
     #[error("Orchard error")]

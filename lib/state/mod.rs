@@ -346,6 +346,10 @@ impl State {
         let mut value_in = bitcoin::Amount::ZERO;
         let mut value_out = bitcoin::Amount::ZERO;
         for utxo in &transaction.spent_utxos {
+            // a withdrawal output is committed to a bundle, not spendable by a tx
+            if utxo.content.is_withdrawal() {
+                return Err(Error::SpendWithdrawalOutput);
+            }
             value_in = value_in
                 .checked_add(utxo.get_value())
                 .ok_or(AmountOverflowError)?;
@@ -658,8 +662,9 @@ mod test {
     use crate::{
         state::State,
         types::{
-            InPoint, OutPoint, OutPointKey, Output, OutputContent, SpentOutput,
-            TransparentAddress,
+            FilledTransaction, InPoint, OutPoint, OutPointKey, Output,
+            OutputContent, PointedOutputRef, SpentOutput, TransparentAddress,
+            Transaction, hash,
         },
     };
 
@@ -699,6 +704,43 @@ mod test {
             address,
             content: OutputContent::Value(bitcoin::Amount::from_sat(sats)),
         }
+    }
+
+    #[test]
+    fn cannot_spend_withdrawal_output() -> anyhow::Result<()> {
+        let (_env, state) = fresh_state("cannot-spend-withdrawal-output")?;
+        let main_address = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+            .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .unwrap();
+        let withdrawal = Output {
+            address: TransparentAddress::ALL_ZEROS,
+            content: OutputContent::Withdrawal {
+                value: bitcoin::Amount::from_sat(1000),
+                main_fee: bitcoin::Amount::from_sat(300),
+                main_address,
+            },
+        };
+        let outpoint = OutPoint::Regular {
+            txid: [1; 32].into(),
+            vout: 0,
+        };
+        let utxo_hash = hash(&PointedOutputRef {
+            outpoint,
+            output: &withdrawal,
+        });
+        let tx = FilledTransaction {
+            transaction: Transaction {
+                inputs: vec![(outpoint, utxo_hash)],
+                outputs: vec![value_output(TransparentAddress::ALL_ZEROS, 1300)],
+                ..Default::default()
+            },
+            spent_utxos: vec![withdrawal],
+        };
+        assert!(matches!(
+            state.validate_filled_transaction(&tx),
+            Err(crate::state::Error::SpendWithdrawalOutput)
+        ));
+        Ok(())
     }
 
     #[test]
