@@ -1409,7 +1409,7 @@ impl Wallet {
             {
                 decrypted_outgoing_note_idxs.insert(idx);
                 let nf = *orchard_bundle.actions()[idx].nullifier();
-                let Some((_, position)) = self
+                let Some((spent_note, position)) = self
                     .orchard_spent_notes
                     .try_get(&rwtxn, &(txid, idx as u32))?
                 else {
@@ -1424,7 +1424,11 @@ impl Wallet {
                 let _: bool = self
                     .orchard_spent_notes
                     .delete(&mut rwtxn, &(txid, idx as u32))?;
-                self.orchard_notes.put(&mut rwtxn, &nf, &(note, position))?;
+                self.orchard_notes.put(
+                    &mut rwtxn,
+                    &nf,
+                    &(spent_note, position),
+                )?;
             }
             for (idx, action) in
                 orchard_bundle.actions().iter().enumerate().rev()
