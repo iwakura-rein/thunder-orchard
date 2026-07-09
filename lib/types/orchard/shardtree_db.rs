@@ -19,7 +19,7 @@ use shardtree::{
     store::{TreeState, caching::CachingShardStore},
 };
 use sneed::{
-    DatabaseDup, DatabaseUnique, DbError, Env, RoTxn, RwTxn, UnitKey, db, env,
+    DatabaseDup, DatabaseUnique, DbError, Env, RwTxn, UnitKey, db, env,
 };
 use thiserror::Error;
 use transitive::Transitive;
@@ -315,6 +315,8 @@ impl From<DbError> for CreateShardTreeDbError {
     }
 }
 
+type RoTxn<'a, Tag> = sneed::RoTxn<'a, heed::AnyTls, Tag>;
+
 /// Store a [`ShardTree`] using LMDB
 #[derive(Debug, Educe)]
 #[educe(Clone(bound()))]
@@ -347,8 +349,8 @@ impl<Tag> ShardTreeDb<Tag> {
     /// An optional prefix can be set for the DB names.
     /// If set, all DB names will have the prefix `PREFIX_` where `PREFIX` is
     /// the value of `db_name_prefix`.
-    pub fn new(
-        env: &Env<Tag>,
+    pub fn new<Tls>(
+        env: &Env<Tls, Tag>,
         rwtxn: &mut RwTxn<Tag>,
         db_name_prefix: Option<&str>,
     ) -> Result<Self, CreateShardTreeDbError> {
@@ -504,7 +506,7 @@ impl From<DbError> for StoreError {
 }
 
 pub mod db_txn {
-    use sneed::{RoTxn, RwTxn, rotxn, rwtxn};
+    use sneed::{RwTxn, rotxn, rwtxn};
 
     use crate::types::orchard::shardtree_db::StoreError;
 
@@ -515,6 +517,8 @@ pub mod db_txn {
         #[error(transparent)]
         Rw(#[from] rwtxn::error::Commit),
     }
+
+    type RoTxn<'a, Tag> = sneed::RoTxn<'a, heed::AnyTls, Tag>;
 
     /// Either RoTxn or RwTxn
     pub enum DbTxn<'a, Tag> {

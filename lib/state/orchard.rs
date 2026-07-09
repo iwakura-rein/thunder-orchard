@@ -31,8 +31,8 @@ pub struct Orchard {
 impl Orchard {
     pub const NUM_DBS: u32 = 5;
 
-    pub fn new(
-        env: &sneed::Env,
+    pub fn new<Tls>(
+        env: &sneed::Env<Tls>,
         rwtxn: &mut RwTxn,
     ) -> Result<Self, state::Error> {
         let block_hash_to_root =

@@ -213,8 +213,8 @@ fn deepest_available_anchor_depth<E>(
 pub struct WalletEnv;
 
 type DatabaseUnique<KC, DC> = sneed::DatabaseUnique<KC, DC, WalletEnv>;
-type Env = sneed::Env<WalletEnv>;
-type RoTxn<'a> = sneed::RoTxn<'a, WalletEnv>;
+type Env = sneed::Env<heed::WithoutTls, WalletEnv>;
+type RoTxn<'a> = sneed::RoTxn<'a, heed::AnyTls, WalletEnv>;
 pub type RwTxn<'a> = sneed::RwTxn<'a, WalletEnv>;
 
 /// Note with position
@@ -222,7 +222,7 @@ type NotePosition = (orchard::Note, orchard::PositionWrapper);
 
 #[derive(Clone)]
 pub struct Wallet {
-    env: sneed::Env<WalletEnv>,
+    env: Env,
     // Seed is always [u8; 64], but due to serde not implementing serialize
     // for [T; 64], use heed's `Bytes`
     // TODO: Don't store the seed in plaintext.
@@ -275,7 +275,8 @@ impl Wallet {
         std::fs::create_dir_all(path)?;
         let env = {
             use heed::EnvFlags;
-            let mut env_open_options = heed::EnvOpenOptions::new();
+            let mut env_open_options =
+                heed::EnvOpenOptions::new().read_txn_without_tls();
             env_open_options
                 .map_size(10 * 1024 * 1024) // 10MB
                 .max_dbs(Self::NUM_DBS);
@@ -298,8 +299,7 @@ impl Wallet {
                 | EnvFlags::MAP_ASYNC
                 | EnvFlags::NO_SYNC
                 | EnvFlags::NO_META_SYNC
-                | EnvFlags::NO_READ_AHEAD
-                | EnvFlags::NO_TLS;
+                | EnvFlags::NO_READ_AHEAD;
             unsafe { env_open_options.flags(fast_flags) };
             unsafe { Env::open(&env_open_options, path) }
                 .map_err(EnvError::from)?
