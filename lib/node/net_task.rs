@@ -1182,7 +1182,7 @@ impl NetTask {
                                     // broadcast
                                     let () = self.ctxt.net.push_tx(
                                         HashSet::from_iter([addr]),
-                                        *new_tx,
+                                        &new_tx,
                                     );
                                 }
                                 Err(jfyi) => {

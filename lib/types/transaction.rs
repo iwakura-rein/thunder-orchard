@@ -724,6 +724,10 @@ where
     pub orchard_bundle: Option<orchard::Bundle<Auth>>,
 }
 
+pub type MissingOrchardAuthorization = Transaction<
+    orchard::InProgress<orchard::BundleProof, orchard::Unauthorized>,
+>;
+
 impl<Auth> Transaction<Auth>
 where
     Auth: BundleAuthorization,
@@ -871,12 +875,13 @@ impl FilledTransaction {
     }
 }
 
-#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
-pub struct AuthorizedTransaction {
-    pub transaction: Transaction,
-    /// Authorization is called witness in Bitcoin.
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct Authorized<T> {
+    pub transaction: T,
+    /// Authorizations are called witnesses in Bitcoin.
     pub authorizations: Vec<Authorization>,
 }
+pub type AuthorizedTransaction = Authorized<Transaction>;
 
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Body {

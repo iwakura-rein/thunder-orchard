@@ -110,6 +110,7 @@ impl Melting {
                     let accumulator = app.node.get_tip_accumulator()?;
                     let tx = tx_fn(&accumulator, &app.wallet)?;
                     let txid = tx.txid();
+                    let tx = app.authorize_orchard_bundle(tx)?;
                     let () = app.sign_and_send(tx)?;
                     txs.write().push(txid);
                 }
@@ -272,6 +273,7 @@ impl Casting {
                     let accumulator = app.node.get_tip_accumulator()?;
                     let tx = tx_fn(&accumulator, &app.wallet)?;
                     let txid = tx.txid();
+                    let tx = app.authorize_orchard_bundle(tx)?;
                     let () = app.sign_and_send(tx)?;
                     txs.write().push(txid);
                 }

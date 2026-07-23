@@ -18,13 +18,16 @@ fn create_transfer(
 ) -> anyhow::Result<()> {
     let accumulator = app.node.get_tip_accumulator()?;
     let tx = match dest {
-        Address::Shielded(dest) => app.wallet.create_shielded_transaction(
-            &accumulator,
-            dest,
-            amount,
-            fee,
-            [0u8; 512],
-        )?,
+        Address::Shielded(dest) => {
+            let tx = app.wallet.create_shielded_transaction(
+                &accumulator,
+                dest,
+                amount,
+                fee,
+                [0u8; 512],
+            )?;
+            app.authorize_orchard_bundle(tx)?
+        }
         Address::Transparent(dest) => {
             app.wallet
                 .create_transaction(&accumulator, dest, amount, fee)?

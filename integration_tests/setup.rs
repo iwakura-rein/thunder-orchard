@@ -268,7 +268,7 @@ impl Sidechain for PostSetup {
     {
         let _txid = self
             .rpc_client
-            .withdraw(
+            .create_withdrawal(
                 receive_address.as_unchecked().clone(),
                 value.to_sat(),
                 0,

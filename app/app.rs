@@ -11,6 +11,7 @@ use thunder_orchard::{
             self,
             generated::{validator_service_server, wallet_service_server},
         },
+        transaction,
     },
     wallet::{self, Wallet},
 };
@@ -318,6 +319,16 @@ impl App {
         update(self.node.as_ref(), &self.wallet, wallet_rwtxn)
     }
 
+    pub fn authorize_orchard_bundle(
+        &self,
+        tx: transaction::MissingOrchardAuthorization,
+    ) -> Result<Transaction, Error> {
+        let wallet_rotxn =
+            self.wallet.env().read_txn().map_err(wallet::Error::from)?;
+        let tx = self.wallet.authorize_orchard_bundle(&wallet_rotxn, tx)?;
+        Ok(tx)
+    }
+
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
         let authorized_transaction = self.wallet.authorize(tx)?;
         let mut wallet_rwtxn =
@@ -366,7 +377,18 @@ impl App {
                 orchard_bundle,
             )?;
         }
-        self.node.submit_transaction(authorized_transaction)?;
+        self.node.submit_transaction(&authorized_transaction)?;
+        let () = self.update(wallet_rwtxn)?;
+        Ok(())
+    }
+
+    pub fn submit_transaction(
+        &self,
+        tx: &thunder_orchard::types::AuthorizedTransaction,
+    ) -> Result<(), Error> {
+        self.node.submit_transaction(tx)?;
+        let wallet_rwtxn =
+            self.wallet.env().write_txn().map_err(wallet::Error::from)?;
         let () = self.update(wallet_rwtxn)?;
         Ok(())
     }

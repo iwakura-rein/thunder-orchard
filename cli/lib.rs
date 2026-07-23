@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{marker::PhantomData, net::SocketAddr, time::Duration};
 
 use clap::{Parser, Subcommand};
 use http::HeaderMap;
@@ -7,6 +7,20 @@ use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 use thunder_orchard::types::{ShieldedAddress, TransparentAddress, Txid};
 use thunder_orchard_app_rpc_api::RpcClient;
 use tracing_subscriber::layer::SubscriberExt as _;
+
+struct JsonParser<T>(PhantomData<T>);
+
+impl<T> JsonParser<T> {
+    fn parse(
+        s: &str,
+    ) -> Result<T, serde_path_to_error::Error<serde_json::Error>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let mut deserializer = serde_json::Deserializer::from_str(s);
+        serde_path_to_error::deserialize(&mut deserializer)
+    }
+}
 
 #[derive(Clone, Debug, Subcommand)]
 #[command(arg_required_else_help(true))]
@@ -22,6 +36,48 @@ pub enum Command {
         value_sats: u64,
         #[arg(long)]
         fee_sats: u64,
+    },
+    /// Create a tx that shields transparent funds
+    CreateShield {
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Create a tx that transfers shielded funds to the specified address
+    CreateShieldedTransfer {
+        dest: ShieldedAddress,
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Create a tx that transfers funds to the specified address
+    /// transparently
+    CreateTransparentTransfer {
+        dest: TransparentAddress,
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Create a tx that unshields shielded funds
+    CreateUnshield {
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Creates a tx that initiates a withdrawal to the specified mainchain
+    /// address
+    CreateWithdrawal {
+        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        #[arg(long)]
+        amount_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+        #[arg(long)]
+        mainchain_fee_sats: u64,
     },
     /// Delete peer from known_peers DB.
     /// Connections to the peer are not terminated.
@@ -82,50 +138,25 @@ pub enum Command {
     RemoveFromMempool { txid: Txid },
     /// Set the wallet seed from a mnemonic seed phrase
     SetSeedFromMnemonic { mnemonic: String },
-    /// Shield transparent funds
-    Shield {
-        #[arg(long)]
-        value_sats: u64,
-        #[arg(long)]
-        fee_sats: u64,
-    },
-    /// Transfer shielded funds to the specified address
-    ShieldedTransfer {
-        dest: ShieldedAddress,
-        #[arg(long)]
-        value_sats: u64,
-        #[arg(long)]
-        fee_sats: u64,
-    },
     /// Get total sidechain wealth
     SidechainWealth,
+    /// Sign a transaction, and optionally broadcast it.
+    SignTransaction {
+        #[arg(value_parser = JsonParser::<thunder_orchard::types::Transaction>::parse)]
+        transaction: thunder_orchard::types::Transaction,
+        #[arg(default_value_t = false)]
+        broadcast: bool,
+    },
+    /// Verify and broadcast a transaction
+    SubmitTransaction {
+        #[arg(
+            value_parser =
+                JsonParser::<thunder_orchard::types::AuthorizedTransaction>::parse
+        )]
+        transaction: thunder_orchard::types::AuthorizedTransaction,
+    },
     /// Stop the node
     Stop,
-    /// Transfer transparent funds to the specified address
-    TransparentTransfer {
-        dest: TransparentAddress,
-        #[arg(long)]
-        value_sats: u64,
-        #[arg(long)]
-        fee_sats: u64,
-    },
-    /// Unshield shielded funds
-    Unshield {
-        #[arg(long)]
-        value_sats: u64,
-        #[arg(long)]
-        fee_sats: u64,
-    },
-    /// Initiate a withdrawal to the specified mainchain address
-    Withdraw {
-        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        #[arg(long)]
-        amount_sats: u64,
-        #[arg(long)]
-        fee_sats: u64,
-        #[arg(long)]
-        mainchain_fee_sats: u64,
-    },
 }
 
 fn default_rpc_url() -> url::Url {
@@ -176,6 +207,56 @@ where
         } => {
             let txid = rpc_client
                 .create_deposit(address, value_sats, fee_sats)
+                .await?;
+            format!("{txid}")
+        }
+        Command::CreateShield {
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client.create_shield(value_sats, fee_sats).await?;
+            format!("{txid}")
+        }
+        Command::CreateShieldedTransfer {
+            dest,
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client
+                .create_shielded_transfer(dest, value_sats, fee_sats)
+                .await?;
+            format!("{txid}")
+        }
+        Command::CreateUnshield {
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client.create_unshield(value_sats, fee_sats).await?;
+            format!("{txid}")
+        }
+        Command::CreateTransparentTransfer {
+            dest,
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client
+                .create_transparent_transfer(dest, value_sats, fee_sats)
+                .await?;
+            format!("{txid}")
+        }
+        Command::CreateWithdrawal {
+            mainchain_address,
+            amount_sats,
+            fee_sats,
+            mainchain_fee_sats,
+        } => {
+            let txid = rpc_client
+                .create_withdrawal(
+                    mainchain_address,
+                    amount_sats,
+                    fee_sats,
+                    mainchain_fee_sats,
+                )
                 .await?;
             format!("{txid}")
         }
@@ -280,63 +361,26 @@ where
             let () = rpc_client.set_seed_from_mnemonic(mnemonic).await?;
             String::default()
         }
-        Command::Shield {
-            value_sats,
-            fee_sats,
-        } => {
-            let txid = rpc_client.shield(value_sats, fee_sats).await?;
-            format!("{txid}")
-        }
-        Command::ShieldedTransfer {
-            dest,
-            value_sats,
-            fee_sats,
-        } => {
-            let txid = rpc_client
-                .shielded_transfer(dest, value_sats, fee_sats)
-                .await?;
-            format!("{txid}")
-        }
         Command::SidechainWealth => {
             let sidechain_wealth = rpc_client.sidechain_wealth_sats().await?;
             format!("{sidechain_wealth}")
         }
+        Command::SignTransaction {
+            transaction,
+            broadcast,
+        } => {
+            let authorized = rpc_client
+                .sign_transaction(transaction, Some(broadcast))
+                .await?;
+            serde_json::to_string_pretty(&authorized)?
+        }
+        Command::SubmitTransaction { transaction } => {
+            let txid = rpc_client.submit_transaction(transaction).await?;
+            format!("{txid}")
+        }
         Command::Stop => {
             let () = rpc_client.stop().await?;
             String::default()
-        }
-        Command::TransparentTransfer {
-            dest,
-            value_sats,
-            fee_sats,
-        } => {
-            let txid = rpc_client
-                .transparent_transfer(dest, value_sats, fee_sats)
-                .await?;
-            format!("{txid}")
-        }
-        Command::Unshield {
-            value_sats,
-            fee_sats,
-        } => {
-            let txid = rpc_client.unshield(value_sats, fee_sats).await?;
-            format!("{txid}")
-        }
-        Command::Withdraw {
-            mainchain_address,
-            amount_sats,
-            fee_sats,
-            mainchain_fee_sats,
-        } => {
-            let txid = rpc_client
-                .withdraw(
-                    mainchain_address,
-                    amount_sats,
-                    fee_sats,
-                    mainchain_fee_sats,
-                )
-                .await?;
-            format!("{txid}")
         }
     })
 }

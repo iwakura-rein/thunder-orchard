@@ -18,7 +18,7 @@ pub mod hashes;
 pub mod orchard;
 pub mod proto;
 pub mod schema;
-mod transaction;
+pub mod transaction;
 
 pub use address::{Address, ShieldedAddress, TransparentAddress};
 pub use hashes::{

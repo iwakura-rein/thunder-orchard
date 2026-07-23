@@ -17,6 +17,7 @@ fn create_shield_tx(
     let tx = app
         .wallet
         .create_shield_transaction(&accumulator, amount, fee)?;
+    let tx = app.authorize_orchard_bundle(tx)?;
     app.sign_and_send(tx)?;
     Ok(())
 }
@@ -86,6 +87,7 @@ fn create_unshield_tx(
     let tx =
         app.wallet
             .create_unshield_transaction(&accumulator, amount, fee)?;
+    let tx = app.authorize_orchard_bundle(tx)?;
     app.sign_and_send(tx)?;
     Ok(())
 }

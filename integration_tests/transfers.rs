@@ -154,7 +154,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .alice
         .rpc_client
-        .transparent_transfer(
+        .create_transparent_transfer(
             sidechain_nodes
                 .bob
                 .rpc_client
@@ -204,7 +204,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .bob
         .rpc_client
-        .shield(SHIELD_AMOUNT.to_sat(), 0)
+        .create_shield(SHIELD_AMOUNT.to_sat(), 0)
         .await?;
     // Check balances
     {
@@ -246,7 +246,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .bob
         .rpc_client
-        .shielded_transfer(
+        .create_shielded_transfer(
             sidechain_nodes
                 .alice
                 .rpc_client
@@ -304,7 +304,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .alice
         .rpc_client
-        .unshield(UNSHIELD_AMOUNT.to_sat(), 0)
+        .create_unshield(UNSHIELD_AMOUNT.to_sat(), 0)
         .await?;
     // Check balances
     {

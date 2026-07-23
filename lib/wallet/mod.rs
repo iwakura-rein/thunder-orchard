@@ -33,6 +33,7 @@ use crate::{
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError, BlockHash,
         Body, Header, PointedOutput, Txid, UtreexoError, VERSION, Version,
+        transaction,
     },
     util::Watchable,
 };
@@ -797,7 +798,7 @@ impl Wallet {
         value: bitcoin::Amount,
         fee: bitcoin::Amount,
         memo: [u8; 512],
-    ) -> Result<Transaction, Error> {
+    ) -> Result<transaction::MissingOrchardAuthorization, Error> {
         let mut rwtxn = self.env.write_txn()?;
         let change_addr = self.get_new_orchard_address(&mut rwtxn)?;
         let orchard_spending_key = self.get_orchard_spending_key(&rwtxn)?;
@@ -844,11 +845,8 @@ impl Wallet {
             outputs: Vec::new(),
             orchard_bundle,
         };
-        let spend_auth_key =
-            orchard::SpendAuthorizingKey::from(&orchard_spending_key);
-        let res = authorization::sign_orchard(&[spend_auth_key], transaction)?;
         rwtxn.commit()?;
-        Ok(res)
+        Ok(transaction)
     }
 
     /// Create a transaction that shields the specified amount,
@@ -863,7 +861,7 @@ impl Wallet {
         shield_amount: bitcoin::Amount,
         fee: bitcoin::Amount,
         coins: Vec<(OutPoint, Output)>,
-    ) -> Result<Transaction, Error> {
+    ) -> Result<transaction::MissingOrchardAuthorization, Error> {
         let value_in = coins
             .iter()
             .map(|(_, output)| output.get_value())
@@ -974,11 +972,8 @@ impl Wallet {
             outputs,
             orchard_bundle,
         };
-        let spend_auth_key =
-            orchard::SpendAuthorizingKey::from(&orchard_spending_key);
-        let res = authorization::sign_orchard(&[spend_auth_key], transaction)?;
         rwtxn.commit()?;
-        Ok(res)
+        Ok(transaction)
     }
 
     /// Create a transaction that shields the specified amount.
@@ -990,7 +985,7 @@ impl Wallet {
         accumulator: &Accumulator,
         shield_amount: bitcoin::Amount,
         fee: bitcoin::Amount,
-    ) -> Result<Transaction, Error> {
+    ) -> Result<transaction::MissingOrchardAuthorization, Error> {
         let rwtxn = self.env.write_txn()?;
         let (_, coins) = self.select_transparent_coins(
             &rwtxn,
@@ -1013,7 +1008,7 @@ impl Wallet {
         accumulator: &Accumulator,
         value: bitcoin::Amount,
         fee: bitcoin::Amount,
-    ) -> Result<Transaction, Error> {
+    ) -> Result<transaction::MissingOrchardAuthorization, Error> {
         let mut rwtxn = self.env.write_txn()?;
         let inputs = Vec::new();
         let input_utxo_hashes = Vec::<BitcoinNodeHash>::new();
@@ -1058,11 +1053,8 @@ impl Wallet {
             outputs,
             orchard_bundle,
         };
-        let spend_auth_key =
-            orchard::SpendAuthorizingKey::from(&orchard_spending_key);
-        let res = authorization::sign_orchard(&[spend_auth_key], transaction)?;
         rwtxn.commit()?;
-        Ok(res)
+        Ok(transaction)
     }
 
     pub fn delete_utxos(&self, outpoints: &[OutPoint]) -> Result<(), Error> {
@@ -1636,9 +1628,7 @@ impl Wallet {
     pub fn authorize_orchard_bundle(
         &self,
         rotxn: &RoTxn,
-        transaction: Transaction<
-            orchard::InProgress<orchard::BundleProof, orchard::Unauthorized>,
-        >,
+        transaction: transaction::MissingOrchardAuthorization,
     ) -> Result<Transaction, Error> {
         let spending_key = self.get_orchard_spending_key(rotxn)?;
         let spend_auth_key = orchard::SpendAuthorizingKey::from(&spending_key);
@@ -1879,8 +1869,13 @@ impl Cast {
 
     pub async fn next_tx(
         &mut self,
-    ) -> Option<impl FnOnce(&Accumulator, &Wallet) -> Result<Transaction, Error>>
-    {
+    ) -> Option<
+        impl FnOnce(
+            &Accumulator,
+            &Wallet,
+        )
+            -> Result<transaction::MissingOrchardAuthorization, Error>,
+    > {
         let (bill_exponent, ts) =
             self.bill_exponents_with_timestamps.front()?;
         let sleep_duration =
@@ -1932,8 +1927,13 @@ impl MeltBatch {
 
     pub async fn next_tx(
         &mut self,
-    ) -> Option<impl FnOnce(&Accumulator, &Wallet) -> Result<Transaction, Error>>
-    {
+    ) -> Option<
+        impl FnOnce(
+            &Accumulator,
+            &Wallet,
+        )
+            -> Result<transaction::MissingOrchardAuthorization, Error>,
+    > {
         let (bill_exponent, ts) =
             self.bill_exponents_with_timestamps.front()?;
         let sleep_duration =

@@ -10,7 +10,7 @@ use thunder_orchard::{
     types::{
         BlockHash, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
         ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
-        WithdrawalBundle, schema as thunder_orchard_schema,
+        WithdrawalBundle, schema as thunder_orchard_schema, transaction,
     },
     wallet::Balance,
 };
@@ -57,6 +57,57 @@ pub trait Rpc {
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<bitcoin::Txid>;
+
+    /// Create a tx that shields transparent funds
+    #[method(name = "create_shield")]
+    async fn create_shield(
+        &self,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid>;
+
+    /// Create a tx that transfers shielded funds to the specified address
+    #[method(name = "create_shielded_transfer")]
+    async fn create_shielded_transfer(
+        &self,
+        dest: ShieldedAddress,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid>;
+
+    /// Create a tx that transfers funds to the specified address
+    /// transparently
+    #[method(name = "create_transparent_transfer")]
+    async fn create_transparent_transfer(
+        &self,
+        dest: TransparentAddress,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid>;
+
+    /// Create a tx that unshields shielded funds
+    #[method(name = "create_unshield")]
+    async fn create_unshield(
+        &self,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid>;
+
+    /// Creates a tx that initiates a withdrawal to the specified mainchain
+    /// address
+    #[method(name = "create_withdrawal")]
+    async fn create_withdrawal(
+        &self,
+        #[open_api_method_arg(schema(
+            PartialSchema = "thunder_orchard::types::schema::BitcoinAddr"
+        ))]
+        mainchain_address: bitcoin::Address<
+            bitcoin::address::NetworkUnchecked,
+        >,
+        amount_sats: u64,
+        fee_sats: u64,
+        mainchain_fee_sats: u64,
+    ) -> RpcResult<Txid>;
 
     /// Delete peer from known_peers DB.
     /// Connections to the peer are not terminated.
@@ -211,53 +262,26 @@ pub trait Rpc {
     #[method(name = "set_seed_from_mnemonic")]
     async fn set_seed_from_mnemonic(&self, mnemonic: String) -> RpcResult<()>;
 
-    /// Shield transparent funds
-    #[method(name = "shield")]
-    async fn shield(&self, value_sats: u64, fee_sats: u64) -> RpcResult<Txid>;
-
-    /// Transfer shielded funds to the specified address
-    #[method(name = "shielded_transfer")]
-    async fn shielded_transfer(
-        &self,
-        dest: ShieldedAddress,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid>;
-
     /// Get total sidechain wealth
     #[method(name = "sidechain_wealth")]
     async fn sidechain_wealth_sats(&self) -> RpcResult<u64>;
 
+    /// Sign a transaction, and optionally broadcast it.
+    #[method(name = "sign_transaction")]
+    async fn sign_transaction(
+        &self,
+        transaction: Transaction,
+        broadcast: Option<bool>,
+    ) -> RpcResult<transaction::Authorized<Transaction>>;
+
+    /// Verify and broadcast a transaction
+    #[method(name = "submit_transaction")]
+    async fn submit_transaction(
+        &self,
+        transaction: transaction::Authorized<Transaction>,
+    ) -> RpcResult<Txid>;
+
     /// Stop the node
     #[method(name = "stop")]
     async fn stop(&self);
-
-    /// Transfer transparent funds to the specified address
-    #[method(name = "transparent_transfer")]
-    async fn transparent_transfer(
-        &self,
-        dest: TransparentAddress,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid>;
-
-    /// Unshield shielded funds
-    #[method(name = "unshield")]
-    async fn unshield(&self, value_sats: u64, fee_sats: u64)
-    -> RpcResult<Txid>;
-
-    /// Initiate a withdrawal to the specified mainchain address
-    #[method(name = "withdraw")]
-    async fn withdraw(
-        &self,
-        #[open_api_method_arg(schema(
-            PartialSchema = "thunder_orchard::types::schema::BitcoinAddr"
-        ))]
-        mainchain_address: bitcoin::Address<
-            bitcoin::address::NetworkUnchecked,
-        >,
-        amount_sats: u64,
-        fee_sats: u64,
-        mainchain_fee_sats: u64,
-    ) -> RpcResult<Txid>;
 }

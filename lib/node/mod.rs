@@ -189,12 +189,12 @@ where
 
     pub fn submit_transaction(
         &self,
-        transaction: AuthorizedTransaction,
+        transaction: &AuthorizedTransaction,
     ) -> Result<(), error::SubmitTransaction> {
         {
             let mut rwtxn = self.env.write_txn()?;
-            self.state.validate_transaction(&rwtxn, &transaction)?;
-            self.mempool.insert(&mut rwtxn, &transaction)?;
+            self.state.validate_transaction(&rwtxn, transaction)?;
+            self.mempool.insert(&mut rwtxn, transaction)?;
             rwtxn.commit()?;
         }
         self.net.push_tx(Default::default(), transaction);
