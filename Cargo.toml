@@ -1,6 +1,7 @@
 [workspace]
-resolver = "2"
+exclude = ["bip300301_enforcer"]
 members = ["app", "cli", "integration_tests", "lib", "rpc-api"]
+resolver = "2"
 
 [workspace.package]
 authors = [
@@ -34,7 +35,7 @@ fallible-iterator = "0.3.0"
 futures = { version = "0.3.30", default-features = false }
 governor = { version = "0.8.1", default-features = false }
 halo2_proofs = { version = "0.3.0", default-features = false }
-hashlink = "0.10.0"
+hashlink = "0.12.1"
 heed = "0.22.0"
 hex = "0.4.3"
 http = "1.2.0"
@@ -95,13 +96,11 @@ zip32 = "0.2.0"
 
 [workspace.dependencies.bip300301_enforcer_lib]
 default-features = false
-git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "1100b6085d9ed64eeaf1b57b3c44609626bd4b23"
+path = "bip300301_enforcer/lib"
 
 [workspace.dependencies.bip300301_enforcer_integration_tests]
 default-features = false
-git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "1100b6085d9ed64eeaf1b57b3c44609626bd4b23"
+path = "bip300301_enforcer/integration_tests"
 
 [workspace.dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"

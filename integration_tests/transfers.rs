@@ -141,6 +141,8 @@ async fn transfers_task(
 ) -> anyhow::Result<()> {
     let (mut enforcer_post_setup, sidechain_nodes) =
         setup(bin_paths, res_tx.clone()).await?;
+    // Wait for Bob to sync
+    sleep(std::time::Duration::from_secs(5)).await;
     // Check initial balances
     {
         let alice_balance = sidechain_nodes.alice.rpc_client.balance().await?;
