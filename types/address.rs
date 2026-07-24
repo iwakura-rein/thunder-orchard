@@ -34,7 +34,7 @@ impl TransparentAddress {
         let prefix = format!("s{}_{}_", THIS_SIDECHAIN, self.as_base58());
         let prefix_digest =
             sha256::Hash::hash(prefix.as_bytes()).to_byte_array();
-        format!("{prefix}{}", hex::encode(&prefix_digest[..3]))
+        format!("{prefix}{}", const_hex::encode(&prefix_digest[..3]))
     }
 }
 
@@ -103,7 +103,7 @@ pub struct WrongHrpError {
 pub enum Bech32mDecodeError {
     #[error(transparent)]
     Bech32m(#[from] bech32::DecodeError),
-    #[error("Invalid bytes: `{}`", hex::encode(.bytes))]
+    #[error("Invalid bytes: `{}`", const_hex::encode(.bytes))]
     InvalidBytes { bytes: [u8; 43] },
     #[error(transparent)]
     WrongHrp(#[from] Box<WrongHrpError>),
@@ -177,7 +177,7 @@ impl<'de> Deserialize<'de> for ShieldedAddress {
         D: Deserializer<'de>,
     {
         #[derive(Debug, Error)]
-        #[error("invalid address (`{}`)", hex::encode(.0))]
+        #[error("invalid address (`{}`)", const_hex::encode(.0))]
         #[repr(transparent)]
         struct InvalidAddress([u8; 43]);
 

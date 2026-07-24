@@ -12,9 +12,9 @@ use crate::types::{
 #[derive(Debug, Error)]
 #[error(
     "Computed Utxo hash ({}) for input ({}) does not match input hash ({})",
-    hex::encode(.computed),
+    const_hex::encode(.computed),
     .outpoint,
-    hex::encode(.input_hash),
+    const_hex::encode(.input_hash),
 )]
 pub struct UtxoHashMismatch {
     pub(in crate::state) computed: Hash,

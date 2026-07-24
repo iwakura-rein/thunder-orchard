@@ -6,6 +6,7 @@ blake3 = { workspace = true }
 borsh = { workspace = true, features = ["derive"] }
 bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }
 clap = { workspace = true, features = ["derive"], optional = true }
+const-hex = { workspace = true, features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["batch", "serde"] }
 educe = { workspace = true, features = ["Clone", "Debug", "Default"] }
 error-fatality = { workspace = true }
@@ -14,7 +15,6 @@ fallible-iterator = { workspace = true, optional = true }
 halo2_proofs = { workspace = true }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true, optional = true }
-hex = { workspace = true, features = ["serde"] }
 incrementalmerkletree = { workspace = true }
 nonempty = { workspace = true, features = ["serialize"] }
 orchard = { workspace = true }

@@ -116,7 +116,7 @@ pub struct Nullifier(
 impl std::fmt::Display for Nullifier {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0.to_bytes()).fmt(f)
+        const_hex::encode(self.0.to_bytes()).fmt(f)
     }
 }
 
@@ -132,12 +132,12 @@ impl<'de> Deserialize<'de> for Nullifier {
         D: Deserializer<'de>,
     {
         #[derive(Debug, Error)]
-        #[error("invalid nullifier bytes ({})", hex::encode(.0))]
+        #[error("invalid nullifier bytes ({})", const_hex::encode(.0))]
         #[repr(transparent)]
         struct InvalidNullifierBytes([u8; 32]);
 
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
@@ -158,7 +158,7 @@ impl Serialize for Nullifier {
     {
         let bytes = self.0.to_bytes();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -210,7 +210,7 @@ where
         D: Deserializer<'de>,
     {
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
@@ -235,7 +235,7 @@ where
     {
         let bytes: [u8; 32] = self.0.borrow().into();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -339,13 +339,13 @@ impl<'de> Deserialize<'de> for ExtractedNoteCommitment {
         #[derive(Debug, Error)]
         #[error(
             "Failed to parse extracted note commitment from `{}`",
-            hex::encode(.0)
+            const_hex::encode(.0)
         )]
         #[repr(transparent)]
         struct ParseExtractedNoteCommitment([u8; 32]);
 
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
@@ -368,7 +368,7 @@ impl Serialize for ExtractedNoteCommitment {
     {
         let bytes: [u8; 32] = (&self.0).into();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -558,12 +558,15 @@ impl<'de> Deserialize<'de> for ValueCommitmentRepr<'_, Owned> {
         D: Deserializer<'de>,
     {
         #[derive(Debug, Error)]
-        #[error("failed to parse value commitment from `{}`", hex::encode(.0))]
+        #[error(
+            "failed to parse value commitment from `{}`",
+            const_hex::encode(.0),
+        )]
         #[repr(transparent)]
         struct ParseValueCommitment([u8; 32]);
 
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
@@ -588,7 +591,7 @@ where
     {
         let bytes: [u8; 32] = self.0.borrow().to_bytes();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -1043,7 +1046,7 @@ impl Anchor {
 
 impl std::fmt::Display for Anchor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0.to_bytes()).fmt(f)
+        const_hex::encode(self.0.to_bytes()).fmt(f)
     }
 }
 
@@ -1062,7 +1065,7 @@ impl<'de> Deserialize<'de> for Anchor {
         D: Deserializer<'de>,
     {
         #[derive(Debug, Error)]
-        #[error("invalid anchor (`{}`)", hex::encode(.0))]
+        #[error("invalid anchor (`{}`)", const_hex::encode(.0))]
         #[repr(transparent)]
         struct InvalidAnchor([u8; 32]);
 
@@ -1089,7 +1092,7 @@ impl Serialize for Anchor {
         S: Serializer,
     {
         if serializer.is_human_readable() {
-            hex::serde::serialize(self.0.to_bytes(), serializer)
+            const_hex::serde::serialize(self.0.to_bytes(), serializer)
         } else {
             Serialize::serialize(&self.0.to_bytes(), serializer)
         }
@@ -1281,7 +1284,7 @@ impl<'de> Deserialize<'de> for Rho {
         D: Deserializer<'de>,
     {
         #[derive(Debug, Error)]
-        #[error("invalid rho (`{}`)", hex::encode(.0))]
+        #[error("invalid rho (`{}`)", const_hex::encode(.0))]
         #[repr(transparent)]
         struct InvalidRho([u8; 32]);
 
@@ -1309,8 +1312,8 @@ impl Serialize for Rho {
 #[derive(Debug, Error)]
 #[error(
     "Invalid rseed (`{}`) for rho (`{}`)",
-    hex::encode(.rho.0.to_bytes()),
-    hex::encode(.rseed),
+    const_hex::encode(.rho.0.to_bytes()),
+    const_hex::encode(.rseed),
 )]
 struct RandomSeedError {
     rho: Rho,
