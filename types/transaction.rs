@@ -712,33 +712,33 @@ where
     Auth: BundleAuthorization,
 {
     pub fn txid(&self) -> Txid {
-        use smallvec::SmallVec;
         thread_local! {
-            static SCRATCH: std::cell::RefCell<SmallVec<[u8; 512]>> =
-                std::cell::RefCell::new(SmallVec::new());
+            static HASHER: std::cell::RefCell<blake3::Hasher> =
+                std::cell::RefCell::new(blake3::Hasher::new());
         }
+
         let Self {
             inputs,
             proof: _,
             outputs,
             orchard_bundle,
         } = self;
-        let hash = SCRATCH.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            buf.clear();
+        let hash = HASHER.with(|hasher| {
+            let mut hasher = hasher.borrow_mut();
+            hasher.reset();
             // Inputs
-            borsh::to_writer(&mut *buf, inputs)
+            borsh::to_writer(&mut *hasher, inputs)
                 .expect("failed to serialize with borsh to compute a hash");
             // Outputs
-            BorshSerialize::serialize(&outputs, &mut *buf)
+            BorshSerialize::serialize(&outputs, &mut *hasher)
                 .expect("failed to serialize with borsh to compute a hash");
             // Orchard bundle without auth
             if let Some(orchard_bundle) = orchard_bundle {
                 orchard_bundle
-                    .borsh_serialize_without_auth(&mut *buf)
+                    .borsh_serialize_without_auth(&mut *hasher)
                     .expect("failed to serialize with borsh to compute a hash");
             }
-            blake3::hash(&buf).into()
+            hasher.finalize().into()
         });
         Txid(hash)
     }

@@ -27,7 +27,6 @@ semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true, features = ["hex"] }
 shardtree = { workspace = true, optional = true }
-smallvec = { workspace = true, features = ["write"] }
 sneed = { workspace = true, optional = true }
 strum = { workspace = true }
 thiserror = { workspace = true }

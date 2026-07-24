@@ -44,7 +44,6 @@ rustls = { workspace = true, features = ["ring"] }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-smallvec = { workspace = true, features = ["write"] }
 sneed = { workspace = true, features = ["observe"] }
 thiserror = { workspace = true }
 thunder_orchard_types = { path = "../types", features = ["heed", "shardtree"] }
