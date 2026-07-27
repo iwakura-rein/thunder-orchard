@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{collections::HashSet, net::SocketAddr};
 
 use bitcoin::Amount;
 use jsonrpsee::{
@@ -7,8 +7,8 @@ use jsonrpsee::{
     types::ErrorObject,
 };
 use thunder_orchard::types::{
-    PointedOutput, ShieldedAddress, SpentOutput, TransparentAddress, Txid,
-    WithdrawalBundle, net::Peer, wallet::Balance,
+    Pointed, PointedOutput, ShieldedAddress, SpentOutput, TransparentAddress,
+    Txid, WithdrawalBundle, net::Peer, wallet::Balance,
 };
 use thunder_orchard_app_rpc_api::{GetTransactionResponse, RpcServer};
 use tower_http::{
@@ -298,6 +298,21 @@ impl RpcServer for RpcServerImpl {
         Ok(res)
     }
 
+    async fn get_stxos(
+        &self,
+        addresses: HashSet<TransparentAddress>,
+    ) -> RpcResult<Vec<Pointed<SpentOutput>>> {
+        let res = self
+            .app
+            .node
+            .get_stxos_by_addresses(&addresses)
+            .map_err(custom_err)?
+            .into_iter()
+            .map(|(outpoint, output)| Pointed { outpoint, output })
+            .collect();
+        Ok(res)
+    }
+
     async fn get_transaction(
         &self,
         txid: Txid,
@@ -325,6 +340,21 @@ impl RpcServer for RpcServerImpl {
         };
         let mut res: Vec<_> = addrs.into_iter().collect();
         res.sort_by_key(|addr| addr.as_base58());
+        Ok(res)
+    }
+
+    async fn get_utxos(
+        &self,
+        addresses: HashSet<TransparentAddress>,
+    ) -> RpcResult<Vec<PointedOutput>> {
+        let res = self
+            .app
+            .node
+            .get_utxos_by_addresses(&addresses)
+            .map_err(custom_err)?
+            .into_iter()
+            .map(|(outpoint, output)| PointedOutput { outpoint, output })
+            .collect();
         Ok(res)
     }
 

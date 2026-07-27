@@ -648,10 +648,11 @@ impl GetValue for Output {
     Serialize,
     ToSchema,
 )]
-pub struct PointedOutput {
+pub struct Pointed<Output> {
     pub outpoint: OutPoint,
     pub output: Output,
 }
+pub type PointedOutput = Pointed<Output>;
 
 impl From<&PointedOutput> for UtreexoNodeHash {
     fn from(pointed_output: &PointedOutput) -> Self {

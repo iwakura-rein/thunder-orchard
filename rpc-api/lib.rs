@@ -1,15 +1,15 @@
 //! RPC API
 
-use std::net::SocketAddr;
+use std::{collections::HashSet, net::SocketAddr};
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
 use serde::{Deserialize, Serialize};
 use thunder_orchard_types::{
-    BlockHash, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-    ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
-    WithdrawalBundle, net::Peer, schema as thunder_orchard_schema, transaction,
-    wallet::Balance,
+    BlockHash, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
+    PointedOutput, ShieldedAddress, SpentOutput, Transaction,
+    TransparentAddress, Txid, WithdrawalBundle, net::Peer,
+    schema as thunder_orchard_schema, transaction, wallet::Balance,
 };
 use utoipa::ToSchema;
 
@@ -179,6 +179,13 @@ pub trait Rpc {
         &self,
     ) -> RpcResult<Vec<thunder_orchard_types::orchard::Address>>;
 
+    /// Get stxos for addresses
+    #[method(name = "get_stxos")]
+    async fn get_stxos(
+        &self,
+        addresses: HashSet<TransparentAddress>,
+    ) -> RpcResult<Vec<Pointed<SpentOutput>>>;
+
     /// Get transaction by txid
     #[method(name = "get_transaction")]
     async fn get_transaction(
@@ -191,6 +198,13 @@ pub trait Rpc {
     async fn get_transparent_wallet_addresses(
         &self,
     ) -> RpcResult<Vec<TransparentAddress>>;
+
+    /// Get utxos for transparent addresses
+    #[method(name = "get_utxos")]
+    async fn get_utxos(
+        &self,
+        addresses: HashSet<TransparentAddress>,
+    ) -> RpcResult<Vec<PointedOutput>>;
 
     /// Get wallet STXOs
     #[method(name = "get_wallet_stxos")]

@@ -32,7 +32,7 @@ pub mod schema;
 pub mod transaction;
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
-    GetValue, InPoint, OutPoint, OutPointKey, Output, PointedOutput,
+    GetValue, InPoint, OutPoint, OutPointKey, Output, Pointed, PointedOutput,
     PointedOutputRef, SpentOutput, Transaction,
 };
 mod util;
