@@ -9,7 +9,7 @@ use crate::{
     net::error as net,
     node::{mainchain_task, net_task},
     state::error as state,
-    types::{AmountOverflowError, AmountUnderflowError, proto},
+    types::{AmountOverflowError, AmountUnderflowError, UtreexoError, proto},
 };
 
 /// Non-fatal variants indicate tx rejection reason
@@ -24,6 +24,9 @@ pub enum SubmitTransaction {
     #[error("failed to insert tx into mempool")]
     #[fatal(forward)]
     MempoolInsert(#[from] mempool::Insert),
+    #[error("failed to regenerate proof")]
+    #[fatal(forward)]
+    RegenerateProof(#[from] state::RegenerateProof),
     #[error("failed to validate transaction")]
     #[fatal(forward)]
     Validate(#[from] state::ValidateTransaction),
@@ -73,8 +76,8 @@ pub enum Error {
     SendMainchainTaskRequest,
     #[error("state error")]
     State(#[source] Box<state::Error>),
-    #[error("Utreexo error: {0}")]
-    Utreexo(String),
+    #[error(transparent)]
+    Utreexo(#[from] UtreexoError),
     #[error("Verify BMM error")]
     VerifyBmm(anyhow::Error),
 }
@@ -94,5 +97,16 @@ impl From<net_task::Error> for Error {
 impl From<state::Error> for Error {
     fn from(err: state::Error) -> Self {
         Self::State(Box::new(err))
+    }
+}
+
+impl From<state::RegenerateProof> for Error {
+    fn from(err: state::RegenerateProof) -> Self {
+        match err {
+            state::RegenerateProof::DbTryGet(err) => {
+                db::Error::from(err).into()
+            }
+            state::RegenerateProof::Prove(err) => err.into(),
+        }
     }
 }

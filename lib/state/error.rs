@@ -175,6 +175,16 @@ impl From<db::Error> for Orchard {
     }
 }
 
+#[derive(Debug, Error, Fatality, Split)]
+pub enum RegenerateProof {
+    #[error(transparent)]
+    #[fatal(true)]
+    DbTryGet(#[from] db::TryGet),
+    #[error("failed to generate proof")]
+    #[fatal(false)]
+    Prove(#[source] UtreexoError),
+}
+
 #[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Delete, db::Error))]

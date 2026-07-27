@@ -75,6 +75,8 @@ pub enum Error {
     ReceiveMainchainTaskResponse,
     #[error("Receive reorg result cancelled (oneshot)")]
     ReceiveReorgResultOneshot(#[source] oneshot::Canceled),
+    #[error("failed to regenerate proof")]
+    RegenerateProof(#[from] state::error::RegenerateProof),
     #[error("Send mainchain task request failed")]
     SendMainchainTaskRequest,
     #[error("Send new tip ready failed")]

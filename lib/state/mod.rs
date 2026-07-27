@@ -270,14 +270,19 @@ impl State {
         &self,
         rotxn: &RoTxn,
         tx: &mut Transaction,
-    ) -> Result<(), Error> {
-        let accumulator = self.get_accumulator(rotxn)?;
+    ) -> Result<(), error::RegenerateProof> {
+        let accumulator = self
+            .utreexo_accumulator
+            .try_get(rotxn, &())?
+            .unwrap_or_default();
         let targets: Vec<_> = tx
             .inputs
             .iter()
             .map(|(_, utxo_hash)| utxo_hash.into())
             .collect();
-        tx.proof = accumulator.prove(&targets)?;
+        tx.proof = accumulator
+            .prove(&targets)
+            .map_err(error::RegenerateProof::Prove)?;
         Ok(())
     }
 

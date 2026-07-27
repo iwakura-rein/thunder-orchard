@@ -522,12 +522,12 @@ impl RpcServer for RpcServerImpl {
         transaction: thunder_orchard::types::Transaction,
         broadcast: Option<bool>,
     ) -> RpcResult<thunder_orchard::types::AuthorizedTransaction> {
-        let authorized =
+        let mut authorized =
             self.app.wallet.authorize(transaction).map_err(custom_err)?;
         if let Some(true) = broadcast {
             let () = self
                 .app
-                .submit_transaction(&authorized)
+                .submit_transaction(&mut authorized)
                 .map_err(custom_err)?;
         }
         Ok(authorized)
@@ -535,11 +535,11 @@ impl RpcServer for RpcServerImpl {
 
     async fn submit_transaction(
         &self,
-        transaction: thunder_orchard::types::AuthorizedTransaction,
+        mut transaction: thunder_orchard::types::AuthorizedTransaction,
     ) -> RpcResult<Txid> {
         let () = self
             .app
-            .submit_transaction(&transaction)
+            .submit_transaction(&mut transaction)
             .map_err(custom_err)?;
         Ok(transaction.transaction.txid())
     }
