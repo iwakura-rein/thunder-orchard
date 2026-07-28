@@ -20,6 +20,7 @@ use crate::{
         AuthorizedTransaction, Network, THIS_SIDECHAIN, VERSION, Version,
         net::{Peer, PeerConnectionStatus},
     },
+    util::ErrorChain,
 };
 
 pub mod error;
@@ -494,7 +495,7 @@ impl Net {
         let active_peers_read = self.active_peers.read();
         let Some(peer_connection_handle) = active_peers_read.get(&addr) else {
             let err = Error::MissingPeerConnection(addr);
-            tracing::warn!("{:#}", anyhow::Error::from(err));
+            tracing::warn!("{:#}", ErrorChain::new(&err));
             return false;
         };
 
