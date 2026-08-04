@@ -615,8 +615,8 @@ impl ConnectionTask {
             }
             (_, _) => ResponseMessage::NoBlock { block_hash },
         };
-        let () =
-            Connection::send_response(ctxt.network, response_tx, resp).await?;
+        let () = Connection::send_response(ctxt.magic_bytes, response_tx, resp)
+            .await?;
         Ok(())
     }
 
@@ -670,7 +670,7 @@ impl ConnectionTask {
             Err(err) => {
                 if !err.is_fatal() {
                     Connection::send_response(
-                        ctxt.network,
+                        ctxt.magic_bytes,
                         response_tx,
                         ResponseMessage::TransactionRejected(txid),
                     )
@@ -680,7 +680,7 @@ impl ConnectionTask {
             }
             Ok(_) => {
                 Connection::send_response(
-                    ctxt.network,
+                    ctxt.magic_bytes,
                     response_tx,
                     ResponseMessage::TransactionAccepted(txid),
                 )
@@ -860,10 +860,10 @@ impl ConnectionTask {
                     serialized_response,
                     response_tx,
                 }) => {
-                    let network = ctxt.network;
+                    let magic_bytes = ctxt.magic_bytes;
                     self.mailbox_tx.send_response_spawner.spawn(async move {
                         Connection::send_serialized_response(
-                            network,
+                            magic_bytes,
                             response_tx,
                             &serialized_response,
                         )

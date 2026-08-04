@@ -6814,6 +6814,7 @@ dependencies = [
  "bincode",
  "bitcoin",
  "clap",
+ "const-hex",
  "dirs",
  "eframe",
  "fallible-iterator",

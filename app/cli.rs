@@ -95,6 +95,11 @@ impl clap::Args for DatadirArg {
     }
 }
 
+#[inline(always)]
+fn parse_network_magic(s: &str) -> Result<[u8; 4], const_hex::FromHexError> {
+    const_hex::decode_to_array(s)
+}
+
 #[derive(Clone, Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 pub(super) struct Cli {
@@ -134,6 +139,9 @@ pub(super) struct Cli {
     /// Set the network. Setting this may affect other defaults.
     #[arg(default_value_t, long, value_enum)]
     network: Network,
+    /// Manually provide the network magic bytes
+    #[arg(long, value_parser = parse_network_magic)]
+    network_magic: Option<[u8; 4]>,
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
@@ -151,6 +159,8 @@ pub struct Config {
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
     pub network: Network,
+    pub network_magic_override:
+        Option<thunder_orchard::net::peer_message::MagicBytes>,
     pub rpc_addr: SocketAddr,
 }
 
@@ -187,6 +197,7 @@ impl Cli {
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
             network: self.network,
+            network_magic_override: self.network_magic,
             rpc_addr: self.rpc_addr,
         })
     }
