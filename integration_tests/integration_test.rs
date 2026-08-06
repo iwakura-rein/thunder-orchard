@@ -12,6 +12,7 @@ use futures::{FutureExt, channel::mpsc::UnboundedSender, future::BoxFuture};
 use thunder_orchard_app_rpc_api::node::RpcClient as _;
 
 use crate::{
+    block_template::block_template_trial,
     ibd::ibd_trial,
     setup::{Init, PostSetup},
     transfers::transfers_trial,
@@ -164,6 +165,11 @@ pub fn tests(
     failure_collector: TestFailureCollector,
 ) -> Vec<AsyncTrial<BoxFuture<'static, anyhow::Result<()>>>> {
     vec![
+        block_template_trial(
+            bin_paths.clone(),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ),
         deposit_withdraw_roundtrip_trial(
             bin_paths.clone(),
             file_registry.clone(),
