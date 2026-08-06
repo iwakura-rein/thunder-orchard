@@ -1,298 +1,342 @@
 //! RPC API
 
-use std::{collections::HashSet, net::SocketAddr};
-
-use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use l2l_openapi::open_api;
-use serde::{Deserialize, Serialize};
-use thunder_orchard_types::{
-    BlockHash, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
-    PointedOutput, ShieldedAddress, SpentOutput, Transaction,
-    TransparentAddress, Txid, WithdrawalBundle, net::Peer,
-    schema as thunder_orchard_schema, transaction, wallet::Balance,
-};
-use utoipa::ToSchema;
-
 mod schema;
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub struct GetTransactionResponse {
-    pub tx: Transaction,
-    /// Block hash, if in the active chain
-    pub block_hash: Option<BlockHash>,
+pub mod open_api {
+    use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+    use l2l_openapi::open_api;
+
+    use crate::schema;
+
+    #[open_api]
+    #[rpc(client, server)]
+    pub trait Rpc {
+        /// Get OpenAPI schema
+        #[open_api_method(output_schema(PartialSchema = "schema::OpenApi"))]
+        #[method(name = "openapi_schema")]
+        async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi>;
+    }
 }
 
-#[open_api(ref_schemas[
-    MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
-    schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
-    thunder_orchard_schema::BitcoinOutPoint,
-])]
-#[rpc(client, server)]
-pub trait Rpc {
-    /// Get balance in sats
-    #[open_api_method(output_schema(ToSchema))]
-    #[method(name = "balance")]
-    async fn balance(&self) -> RpcResult<Balance>;
+pub mod node {
+    use std::{collections::HashSet, net::SocketAddr};
 
-    /// Connect to a peer
-    #[open_api_method(output_schema(ToSchema))]
-    #[method(name = "connect_peer")]
-    async fn connect_peer(
-        &self,
-        #[open_api_method_arg(schema(
-            PartialSchema = "thunder_orchard_schema::SocketAddr"
+    use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+    use l2l_openapi::open_api;
+    use serde::{Deserialize, Serialize};
+    use thunder_orchard_types::{
+        BlockHash, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
+        PointedOutput, SpentOutput, Transaction, TransparentAddress, Txid,
+        WithdrawalBundle, net::Peer, schema as thunder_orchard_schema,
+        transaction,
+    };
+    use utoipa::ToSchema;
+
+    use crate::{open_api, schema};
+
+    #[open_api(ref_schemas[Txid])]
+    #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
+    pub trait PrivateRpc {
+        /// Connect to a peer
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "connect_peer")]
+        async fn connect_peer(
+            &self,
+            #[open_api_method_arg(schema(
+                PartialSchema = "thunder_orchard_schema::SocketAddr"
+            ))]
+            addr: SocketAddr,
+        ) -> RpcResult<()>;
+
+        /// Delete peer from known_peers DB.
+        /// Connections to the peer are not terminated.
+        #[method(name = "forget_peer")]
+        async fn forget_peer(
+            &self,
+            #[open_api_method_arg(schema(
+                PartialSchema = "thunder_orchard_schema::SocketAddr"
+            ))]
+            addr: SocketAddr,
+        ) -> RpcResult<()>;
+
+        /// Remove a tx from the mempool
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "remove_from_mempool")]
+        async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()>;
+
+        /// Stop the node
+        #[method(name = "stop")]
+        async fn stop(&self);
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct GetTransactionResponse {
+        pub tx: Transaction,
+        /// Block hash, if in the active chain
+        pub block_hash: Option<BlockHash>,
+    }
+
+    #[open_api(ref_schemas[
+        MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
+        schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
+        thunder_orchard_schema::BitcoinOutPoint,
+    ])]
+    #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
+    pub trait Rpc {
+        /// Get the best mainchain block hash known by Thunder-Orchard
+        #[open_api_method(output_schema(
+            PartialSchema = "schema::Optional<thunder_orchard_schema::BitcoinBlockHash>"
         ))]
-        addr: SocketAddr,
-    ) -> RpcResult<()>;
+        #[method(name = "get_best_mainchain_block_hash")]
+        async fn get_best_mainchain_block_hash(
+            &self,
+        ) -> RpcResult<Option<bitcoin::BlockHash>>;
 
-    /// Deposit to address
-    #[open_api_method(output_schema(PartialSchema = "schema::BitcoinTxid"))]
-    #[method(name = "create_deposit")]
-    async fn create_deposit(
-        &self,
-        address: TransparentAddress,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<bitcoin::Txid>;
-
-    /// Create a tx that shields transparent funds
-    #[method(name = "create_shield")]
-    async fn create_shield(
-        &self,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid>;
-
-    /// Create a tx that transfers shielded funds to the specified address
-    #[method(name = "create_shielded_transfer")]
-    async fn create_shielded_transfer(
-        &self,
-        dest: ShieldedAddress,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid>;
-
-    /// Create a tx that transfers funds to the specified address
-    /// transparently
-    #[method(name = "create_transparent_transfer")]
-    async fn create_transparent_transfer(
-        &self,
-        dest: TransparentAddress,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid>;
-
-    /// Create a tx that unshields shielded funds
-    #[method(name = "create_unshield")]
-    async fn create_unshield(
-        &self,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid>;
-
-    /// Creates a tx that initiates a withdrawal to the specified mainchain
-    /// address
-    #[method(name = "create_withdrawal")]
-    async fn create_withdrawal(
-        &self,
-        #[open_api_method_arg(schema(
-            PartialSchema = "thunder_orchard_schema::BitcoinAddr"
+        /// Get the best sidechain block hash known by Thunder-Orchard
+        #[open_api_method(output_schema(
+            PartialSchema = "schema::Optional<thunder_orchard_types::BlockHash>"
         ))]
-        mainchain_address: bitcoin::Address<
-            bitcoin::address::NetworkUnchecked,
-        >,
-        amount_sats: u64,
-        fee_sats: u64,
-        mainchain_fee_sats: u64,
-    ) -> RpcResult<Txid>;
+        #[method(name = "get_best_sidechain_block_hash")]
+        async fn get_best_sidechain_block_hash(
+            &self,
+        ) -> RpcResult<Option<thunder_orchard_types::BlockHash>>;
 
-    /// Delete peer from known_peers DB.
-    /// Connections to the peer are not terminated.
-    #[method(name = "forget_peer")]
-    async fn forget_peer(
-        &self,
-        #[open_api_method_arg(schema(
-            PartialSchema = "thunder_orchard_schema::SocketAddr"
+        /// Get the block with specified block hash, if it exists
+        #[method(name = "get_block")]
+        async fn get_block(
+            &self,
+            block_hash: thunder_orchard_types::BlockHash,
+        ) -> RpcResult<Option<thunder_orchard_types::Block>>;
+
+        /// Get mainchain blocks that commit to a specified block hash
+        #[open_api_method(output_schema(
+            PartialSchema = "thunder_orchard_schema::BitcoinBlockHash"
         ))]
-        addr: SocketAddr,
-    ) -> RpcResult<()>;
+        #[method(name = "get_bmm_inclusions")]
+        async fn get_bmm_inclusions(
+            &self,
+            block_hash: thunder_orchard_types::BlockHash,
+        ) -> RpcResult<Vec<bitcoin::BlockHash>>;
 
-    /// Format a deposit address
-    #[method(name = "format_deposit_address")]
-    async fn format_deposit_address(
-        &self,
-        address: TransparentAddress,
-    ) -> RpcResult<String>;
+        /// Get stxos for addresses
+        #[method(name = "get_stxos")]
+        async fn get_stxos(
+            &self,
+            addresses: HashSet<TransparentAddress>,
+        ) -> RpcResult<Vec<Pointed<SpentOutput>>>;
 
-    /// Generate a mnemonic seed phrase
-    #[method(name = "generate_mnemonic")]
-    async fn generate_mnemonic(&self) -> RpcResult<String>;
+        /// Get transaction by txid
+        #[method(name = "get_transaction")]
+        async fn get_transaction(
+            &self,
+            txid: Txid,
+        ) -> RpcResult<Option<GetTransactionResponse>>;
 
-    /// Get the block with specified block hash, if it exists
-    #[method(name = "get_block")]
-    async fn get_block(
-        &self,
-        block_hash: thunder_orchard_types::BlockHash,
-    ) -> RpcResult<Option<thunder_orchard_types::Block>>;
+        /// Get utxos for addresses
+        #[method(name = "get_utxos")]
+        async fn get_utxos(
+            &self,
+            addresses: HashSet<TransparentAddress>,
+        ) -> RpcResult<Vec<PointedOutput>>;
 
-    /// Get mainchain blocks that commit to a specified block hash
-    #[open_api_method(output_schema(
-        PartialSchema = "thunder_orchard_schema::BitcoinBlockHash"
-    ))]
-    #[method(name = "get_bmm_inclusions")]
-    async fn get_bmm_inclusions(
-        &self,
-        block_hash: thunder_orchard_types::BlockHash,
-    ) -> RpcResult<Vec<bitcoin::BlockHash>>;
+        /// Get the current block count
+        #[method(name = "getblockcount")]
+        async fn getblockcount(&self) -> RpcResult<u32>;
 
-    /// Get the best mainchain block hash known by Thunder-Orchard
-    #[open_api_method(output_schema(
-        PartialSchema = "schema::Optional<thunder_orchard_schema::BitcoinBlockHash>"
-    ))]
-    #[method(name = "get_best_mainchain_block_hash")]
-    async fn get_best_mainchain_block_hash(
-        &self,
-    ) -> RpcResult<Option<bitcoin::BlockHash>>;
+        /// Get the height of the latest failed withdrawal bundle
+        #[method(name = "latest_failed_withdrawal_bundle_height")]
+        async fn latest_failed_withdrawal_bundle_height(
+            &self,
+        ) -> RpcResult<Option<u32>>;
 
-    /// Get the best sidechain block hash known by Thunder-Orchard
-    #[open_api_method(output_schema(
-        PartialSchema = "schema::Optional<thunder_orchard_types::BlockHash>"
-    ))]
-    #[method(name = "get_best_sidechain_block_hash")]
-    async fn get_best_sidechain_block_hash(
-        &self,
-    ) -> RpcResult<Option<thunder_orchard_types::BlockHash>>;
+        /// List peers
+        #[method(name = "list_peers")]
+        async fn list_peers(&self) -> RpcResult<Vec<Peer>>;
 
-    /// Get a new shielded address
-    #[method(name = "get_new_shielded_address")]
-    async fn get_new_shielded_address(&self) -> RpcResult<ShieldedAddress>;
+        /// List all UTXOs
+        #[method(name = "list_utxos")]
+        async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
 
-    /// Get a new transparent address
-    #[method(name = "get_new_transparent_address")]
-    async fn get_new_transparent_address(
-        &self,
-    ) -> RpcResult<TransparentAddress>;
+        /// Get pending withdrawal bundle
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "pending_withdrawal_bundle")]
+        async fn pending_withdrawal_bundle(
+            &self,
+        ) -> RpcResult<Option<WithdrawalBundle>>;
 
-    /// Get shielded wallet addresses, sorted by bech32m encoding
-    #[method(name = "get_shielded_wallet_addresses")]
-    async fn get_shielded_wallet_addresses(
-        &self,
-    ) -> RpcResult<Vec<thunder_orchard_types::orchard::Address>>;
+        /// Get total sidechain wealth
+        #[method(name = "sidechain_wealth")]
+        async fn sidechain_wealth_sats(&self) -> RpcResult<u64>;
 
-    /// Get stxos for addresses
-    #[method(name = "get_stxos")]
-    async fn get_stxos(
-        &self,
-        addresses: HashSet<TransparentAddress>,
-    ) -> RpcResult<Vec<Pointed<SpentOutput>>>;
+        /// Verify and broadcast a transaction
+        #[method(name = "submit_transaction")]
+        async fn submit_transaction(
+            &self,
+            transaction: transaction::Authorized<Transaction>,
+        ) -> RpcResult<Txid>;
+    }
+}
 
-    /// Get transaction by txid
-    #[method(name = "get_transaction")]
-    async fn get_transaction(
-        &self,
-        txid: Txid,
-    ) -> RpcResult<Option<GetTransactionResponse>>;
+pub mod wallet {
+    use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+    use l2l_openapi::open_api;
+    use thunder_orchard_types::{
+        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
+        schema as thunder_orchard_schema, transaction, wallet::Balance,
+    };
 
-    /// Get transparent wallet addresses, sorted by base58 encoding
-    #[method(name = "get_transparent_wallet_addresses")]
-    async fn get_transparent_wallet_addresses(
-        &self,
-    ) -> RpcResult<Vec<TransparentAddress>>;
+    use crate::{open_api, schema};
 
-    /// Get utxos for transparent addresses
-    #[method(name = "get_utxos")]
-    async fn get_utxos(
-        &self,
-        addresses: HashSet<TransparentAddress>,
-    ) -> RpcResult<Vec<PointedOutput>>;
+    #[open_api(ref_schemas[
+        MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
+        schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
+        thunder_orchard_schema::BitcoinOutPoint,
+    ])]
+    #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
+    pub trait Rpc {
+        /// Get balance in sats
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "balance")]
+        async fn balance(&self) -> RpcResult<Balance>;
 
-    /// Get wallet STXOs
-    #[method(name = "get_wallet_stxos")]
-    async fn get_wallet_stxos(
-        &self,
-    ) -> RpcResult<Vec<SpentOutput<PointedOutput>>>;
+        /// Deposit to address
+        #[open_api_method(output_schema(
+            PartialSchema = "schema::BitcoinTxid"
+        ))]
+        #[method(name = "create_deposit")]
+        async fn create_deposit(
+            &self,
+            address: TransparentAddress,
+            value_sats: u64,
+            fee_sats: u64,
+        ) -> RpcResult<bitcoin::Txid>;
 
-    /// Get unconfirmed wallet STXOs
-    #[method(name = "get_wallet_stxos_unconfirmed")]
-    async fn get_wallet_stxos_unconfirmed(
-        &self,
-    ) -> RpcResult<Vec<SpentOutput<PointedOutput>>>;
+        /// Create a tx that shields transparent funds
+        #[method(name = "create_shield")]
+        async fn create_shield(
+            &self,
+            value_sats: u64,
+            fee_sats: u64,
+        ) -> RpcResult<Txid>;
 
-    /// Get wallet UTXOs
-    #[method(name = "get_wallet_utxos")]
-    async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
+        /// Create a tx that transfers shielded funds to the specified address
+        #[method(name = "create_shielded_transfer")]
+        async fn create_shielded_transfer(
+            &self,
+            dest: ShieldedAddress,
+            value_sats: u64,
+            fee_sats: u64,
+        ) -> RpcResult<Txid>;
 
-    /// Get unconfirmed wallet UTXOs
-    #[method(name = "get_wallet_utxos_unconfirmed")]
-    async fn get_wallet_utxos_unconfirmed(
-        &self,
-    ) -> RpcResult<Vec<PointedOutput>>;
+        /// Create a tx that transfers funds to the specified address
+        /// transparently
+        #[method(name = "create_transparent_transfer")]
+        async fn create_transparent_transfer(
+            &self,
+            dest: TransparentAddress,
+            value_sats: u64,
+            fee_sats: u64,
+        ) -> RpcResult<Txid>;
 
-    /// Get the current block count
-    #[method(name = "getblockcount")]
-    async fn getblockcount(&self) -> RpcResult<u32>;
+        /// Create a tx that unshields shielded funds
+        #[method(name = "create_unshield")]
+        async fn create_unshield(
+            &self,
+            value_sats: u64,
+            fee_sats: u64,
+        ) -> RpcResult<Txid>;
 
-    /// Get the height of the latest failed withdrawal bundle
-    #[method(name = "latest_failed_withdrawal_bundle_height")]
-    async fn latest_failed_withdrawal_bundle_height(
-        &self,
-    ) -> RpcResult<Option<u32>>;
+        /// Creates a tx that initiates a withdrawal to the specified mainchain
+        /// address
+        #[method(name = "create_withdrawal")]
+        async fn create_withdrawal(
+            &self,
+            #[open_api_method_arg(schema(
+                PartialSchema = "thunder_orchard_schema::BitcoinAddr"
+            ))]
+            mainchain_address: bitcoin::Address<
+                bitcoin::address::NetworkUnchecked,
+            >,
+            amount_sats: u64,
+            fee_sats: u64,
+            mainchain_fee_sats: u64,
+        ) -> RpcResult<Txid>;
 
-    /// List peers
-    #[method(name = "list_peers")]
-    async fn list_peers(&self) -> RpcResult<Vec<Peer>>;
+        /// Format a deposit address
+        #[method(name = "format_deposit_address")]
+        async fn format_deposit_address(
+            &self,
+            address: TransparentAddress,
+        ) -> RpcResult<String>;
 
-    /// List all UTXOs
-    #[method(name = "list_utxos")]
-    async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
+        /// Generate a mnemonic seed phrase
+        #[method(name = "generate_mnemonic")]
+        async fn generate_mnemonic(&self) -> RpcResult<String>;
 
-    /// Attempt to mine a sidechain block
-    #[open_api_method(output_schema(ToSchema))]
-    #[method(name = "mine")]
-    async fn mine(&self, fee: Option<u64>) -> RpcResult<()>;
+        /// Get a new shielded address
+        #[method(name = "get_new_shielded_address")]
+        async fn get_new_shielded_address(&self) -> RpcResult<ShieldedAddress>;
 
-    /// Get OpenAPI schema
-    #[open_api_method(output_schema(PartialSchema = "schema::OpenApi"))]
-    #[method(name = "openapi_schema")]
-    async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi>;
+        /// Get a new transparent address
+        #[method(name = "get_new_transparent_address")]
+        async fn get_new_transparent_address(
+            &self,
+        ) -> RpcResult<TransparentAddress>;
 
-    /// Get pending withdrawal bundle
-    #[open_api_method(output_schema(ToSchema))]
-    #[method(name = "pending_withdrawal_bundle")]
-    async fn pending_withdrawal_bundle(
-        &self,
-    ) -> RpcResult<Option<WithdrawalBundle>>;
+        /// Get shielded wallet addresses, sorted by bech32m encoding
+        #[method(name = "get_shielded_wallet_addresses")]
+        async fn get_shielded_wallet_addresses(
+            &self,
+        ) -> RpcResult<Vec<thunder_orchard_types::orchard::Address>>;
 
-    /// Remove a tx from the mempool
-    #[open_api_method(output_schema(ToSchema))]
-    #[method(name = "remove_from_mempool")]
-    async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()>;
+        /// Get transparent wallet addresses, sorted by base58 encoding
+        #[method(name = "get_transparent_wallet_addresses")]
+        async fn get_transparent_wallet_addresses(
+            &self,
+        ) -> RpcResult<Vec<TransparentAddress>>;
 
-    /// Set the wallet seed from a mnemonic seed phrase
-    #[open_api_method(output_schema(ToSchema))]
-    #[method(name = "set_seed_from_mnemonic")]
-    async fn set_seed_from_mnemonic(&self, mnemonic: String) -> RpcResult<()>;
+        /// Get wallet UTXOs
+        #[method(name = "get_wallet_utxos")]
+        async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
 
-    /// Get total sidechain wealth
-    #[method(name = "sidechain_wealth")]
-    async fn sidechain_wealth_sats(&self) -> RpcResult<u64>;
+        /// Get wallet STXOs
+        #[method(name = "get_wallet_stxos")]
+        async fn get_wallet_stxos(
+            &self,
+        ) -> RpcResult<Vec<SpentOutput<PointedOutput>>>;
 
-    /// Sign a transaction, and optionally broadcast it.
-    #[method(name = "sign_transaction")]
-    async fn sign_transaction(
-        &self,
-        transaction: Transaction,
-        broadcast: Option<bool>,
-    ) -> RpcResult<transaction::Authorized<Transaction>>;
+        /// Get unconfirmed wallet STXOs
+        #[method(name = "get_wallet_stxos_unconfirmed")]
+        async fn get_wallet_stxos_unconfirmed(
+            &self,
+        ) -> RpcResult<Vec<SpentOutput<PointedOutput>>>;
 
-    /// Verify and broadcast a transaction
-    #[method(name = "submit_transaction")]
-    async fn submit_transaction(
-        &self,
-        transaction: transaction::Authorized<Transaction>,
-    ) -> RpcResult<Txid>;
+        /// Get unconfirmed wallet UTXOs
+        #[method(name = "get_wallet_utxos_unconfirmed")]
+        async fn get_wallet_utxos_unconfirmed(
+            &self,
+        ) -> RpcResult<Vec<PointedOutput>>;
 
-    /// Stop the node
-    #[method(name = "stop")]
-    async fn stop(&self);
+        /// Attempt to mine a sidechain block
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "mine")]
+        async fn mine(&self, fee: Option<u64>) -> RpcResult<()>;
+
+        /// Set the wallet seed from a mnemonic seed phrase
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "set_seed_from_mnemonic")]
+        async fn set_seed_from_mnemonic(
+            &self,
+            mnemonic: String,
+        ) -> RpcResult<()>;
+
+        /// Sign a transaction, and optionally broadcast it.
+        #[method(name = "sign_transaction")]
+        async fn sign_transaction(
+            &self,
+            transaction: Transaction,
+            broadcast: Option<bool>,
+        ) -> RpcResult<transaction::Authorized<Transaction>>;
+    }
 }

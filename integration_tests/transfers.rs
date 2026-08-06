@@ -17,7 +17,10 @@ use bitcoin::Amount;
 use futures::{
     FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
 };
-use thunder_orchard_app_rpc_api::RpcClient as _;
+use thunder_orchard_app_rpc_api::{
+    node::{PrivateRpcClient as _, RpcClient as _},
+    wallet::RpcClient as _,
+};
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
