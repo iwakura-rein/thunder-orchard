@@ -141,6 +141,8 @@ async fn transfers_task(
 ) -> anyhow::Result<()> {
     let (mut enforcer_post_setup, sidechain_nodes) =
         setup(bin_paths, res_tx.clone()).await?;
+    // Wait for Bob to sync
+    sleep(std::time::Duration::from_secs(5)).await;
     // Check initial balances
     {
         let alice_balance = sidechain_nodes.alice.rpc_client.balance().await?;
@@ -154,7 +156,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .alice
         .rpc_client
-        .transparent_transfer(
+        .create_transparent_transfer(
             sidechain_nodes
                 .bob
                 .rpc_client
@@ -204,7 +206,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .bob
         .rpc_client
-        .shield(SHIELD_AMOUNT.to_sat(), 0)
+        .create_shield(SHIELD_AMOUNT.to_sat(), 0)
         .await?;
     // Check balances
     {
@@ -246,7 +248,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .bob
         .rpc_client
-        .shielded_transfer(
+        .create_shielded_transfer(
             sidechain_nodes
                 .alice
                 .rpc_client
@@ -304,7 +306,7 @@ async fn transfers_task(
     let _txid = sidechain_nodes
         .alice
         .rpc_client
-        .unshield(UNSHIELD_AMOUNT.to_sat(), 0)
+        .create_unshield(UNSHIELD_AMOUNT.to_sat(), 0)
         .await?;
     // Check balances
     {

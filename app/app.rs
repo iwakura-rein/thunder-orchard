@@ -9,8 +9,12 @@ use thunder_orchard::{
         self, InPoint, OutPoint, Transaction, TransparentAddress,
         proto::mainchain::{
             self,
-            generated::{validator_service_server, wallet_service_server},
+            generated::{
+                mining_service_server, validator_service_server,
+                wallet_service_server,
+            },
         },
+        transaction,
     },
     wallet::{self, Wallet},
 };
@@ -150,6 +154,11 @@ fn update<'a>(
     Ok(())
 }
 
+struct ProtoSupport {
+    miner: bool,
+    wallet: bool,
+}
+
 #[derive(Clone)]
 pub struct App {
     pub node: Arc<Node>,
@@ -208,14 +217,14 @@ impl App {
         }
     }
 
-    /// Returns `true` if validator service AND wallet service are available,
-    /// `false` if only validator service is available, and error if validator
+    /// Returns `Ok(_)` iff validator service is available, and error if validator
     /// service is unavailable.
     async fn check_proto_support(
         transport: tonic::transport::channel::Channel,
-    ) -> Result<bool, tonic::Status> {
+    ) -> Result<ProtoSupport, tonic::Status> {
         let mut client = HealthClient::new(transport);
 
+        let mining_service_name = mining_service_server::SERVICE_NAME;
         let validator_service_name = validator_service_server::SERVICE_NAME;
         let wallet_service_name = wallet_service_server::SERVICE_NAME;
 
@@ -230,17 +239,26 @@ impl App {
 
         tracing::info!("Verified existence of {}", validator_service_name);
 
-        // The wallet service is optional.
+        // The mining and wallet services are optional.
+        let has_mining_service =
+            Self::check_status_serving(&mut client, mining_service_name)
+                .await?;
         let has_wallet_service =
             Self::check_status_serving(&mut client, wallet_service_name)
                 .await?;
 
         tracing::info!(
-            "Checked existence of {}: {}",
+            %has_mining_service,
+            %has_wallet_service,
+            "Checked existence of {}, {}",
+            mining_service_name,
             wallet_service_name,
-            has_wallet_service
         );
-        Ok(has_wallet_service)
+        let res = ProtoSupport {
+            miner: has_mining_service,
+            wallet: has_wallet_service,
+        };
+        Ok(res)
     }
 
     pub fn new(config: &Config) -> Result<Self, Error> {
@@ -272,22 +290,33 @@ impl App {
         .unwrap()
         .concurrency_limit(256)
         .connect_lazy();
-        let (cusf_mainchain, cusf_mainchain_wallet) = if runtime
-            .block_on(Self::check_proto_support(transport.clone()))
-            .map_err(|err| Error::VerifyMainchainServices {
-                url: Box::new(config.mainchain_grpc_url.clone()),
-                source: Box::new(err),
-            })? {
-            (
-                mainchain::ValidatorClient::new(transport.clone()),
-                Some(mainchain::WalletClient::new(transport)),
-            )
-        } else {
-            (mainchain::ValidatorClient::new(transport), None)
+        let (cusf_mainchain, cusf_mainchain_miner, cusf_mainchain_wallet) = {
+            let ProtoSupport { miner, wallet } = runtime
+                .block_on(Self::check_proto_support(transport.clone()))
+                .map_err(|err| Error::VerifyMainchainServices {
+                    url: Box::new(config.mainchain_grpc_url.clone()),
+                    source: Box::new(err),
+                })?;
+            let mining_client = if miner {
+                Some(mainchain::MiningClient::new(transport.clone()))
+            } else {
+                None
+            };
+            let wallet_client = if wallet {
+                Some(mainchain::WalletClient::new(transport.clone()))
+            } else {
+                None
+            };
+            let validator_client = mainchain::ValidatorClient::new(transport);
+            (validator_client, mining_client, wallet_client)
         };
-        let miner = cusf_mainchain_wallet
-            .clone()
-            .map(|wallet| Miner::new(cusf_mainchain.clone(), wallet));
+        let miner = cusf_mainchain_wallet.clone().map(|wallet| {
+            Miner::new(
+                cusf_mainchain.clone(),
+                cusf_mainchain_miner.clone(),
+                wallet,
+            )
+        });
         let local_pool = LocalPoolHandle::new(1);
 
         tracing::debug!("Instantiating node struct");
@@ -316,6 +345,16 @@ impl App {
     /// Update wallet
     fn update<'a>(&self, wallet_rwtxn: wallet::RwTxn<'a>) -> Result<(), Error> {
         update(self.node.as_ref(), &self.wallet, wallet_rwtxn)
+    }
+
+    pub fn authorize_orchard_bundle(
+        &self,
+        tx: transaction::MissingOrchardAuthorization,
+    ) -> Result<Transaction, Error> {
+        let wallet_rotxn =
+            self.wallet.env().read_txn().map_err(wallet::Error::from)?;
+        let tx = self.wallet.authorize_orchard_bundle(&wallet_rotxn, tx)?;
+        Ok(tx)
     }
 
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
@@ -366,7 +405,18 @@ impl App {
                 orchard_bundle,
             )?;
         }
-        self.node.submit_transaction(authorized_transaction)?;
+        self.node.submit_transaction(&authorized_transaction)?;
+        let () = self.update(wallet_rwtxn)?;
+        Ok(())
+    }
+
+    pub fn submit_transaction(
+        &self,
+        tx: &thunder_orchard::types::AuthorizedTransaction,
+    ) -> Result<(), Error> {
+        self.node.submit_transaction(tx)?;
+        let wallet_rwtxn =
+            self.wallet.env().write_txn().map_err(wallet::Error::from)?;
         let () = self.update(wallet_rwtxn)?;
         Ok(())
     }

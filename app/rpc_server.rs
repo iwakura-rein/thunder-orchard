@@ -65,6 +65,120 @@ impl RpcServer for RpcServerImpl {
         .unwrap()
     }
 
+    async fn create_shield(
+        &self,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = tokio::task::block_in_place(|| {
+            self.app.wallet.create_shield_transaction(
+                &accumulator,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
+        })
+        .map_err(custom_err)?;
+        let txid = tx.txid();
+        let tx = self.app.authorize_orchard_bundle(tx).map_err(custom_err)?;
+        self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
+    async fn create_shielded_transfer(
+        &self,
+        dest: ShieldedAddress,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = tokio::task::block_in_place(|| {
+            self.app.wallet.create_shielded_transaction(
+                &accumulator,
+                dest,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+                [0u8; 512],
+            )
+        })
+        .map_err(custom_err)?;
+        let txid = tx.txid();
+        let tx = self.app.authorize_orchard_bundle(tx).map_err(custom_err)?;
+        self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
+    async fn create_transparent_transfer(
+        &self,
+        dest: TransparentAddress,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_transaction(
+                &accumulator,
+                dest,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
+            .map_err(custom_err)?;
+        let txid = tx.txid();
+        let () = self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
+    async fn create_unshield(
+        &self,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = tokio::task::block_in_place(|| {
+            self.app.wallet.create_unshield_transaction(
+                &accumulator,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
+        })
+        .map_err(custom_err)?;
+        let txid = tx.txid();
+        let tx = self.app.authorize_orchard_bundle(tx).map_err(custom_err)?;
+        self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
+    async fn create_withdrawal(
+        &self,
+        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount_sats: u64,
+        fee_sats: u64,
+        mainchain_fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_withdrawal(
+                &accumulator,
+                mainchain_address,
+                Amount::from_sat(amount_sats),
+                Amount::from_sat(mainchain_fee_sats),
+                Amount::from_sat(fee_sats),
+            )
+            .map_err(custom_err)?;
+        let txid = tx.txid();
+        let () = self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
     async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
         self.app.node.connect_peer(addr).map_err(custom_err)
     }
@@ -371,121 +485,41 @@ impl RpcServer for RpcServerImpl {
         self.app.wallet.set_seed(&seed_bytes).map_err(custom_err)
     }
 
-    async fn shield(&self, value_sats: u64, fee_sats: u64) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = tokio::task::block_in_place(|| {
-            self.app.wallet.create_shield_transaction(
-                &accumulator,
-                Amount::from_sat(value_sats),
-                Amount::from_sat(fee_sats),
-            )
-        })
-        .map_err(custom_err)?;
-        let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(custom_err)?;
-        Ok(txid)
-    }
-
-    async fn shielded_transfer(
-        &self,
-        dest: ShieldedAddress,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = tokio::task::block_in_place(|| {
-            self.app.wallet.create_shielded_transaction(
-                &accumulator,
-                dest,
-                Amount::from_sat(value_sats),
-                Amount::from_sat(fee_sats),
-                [0u8; 512],
-            )
-        })
-        .map_err(custom_err)?;
-        let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(custom_err)?;
-        Ok(txid)
-    }
-
     async fn sidechain_wealth_sats(&self) -> RpcResult<u64> {
         let sidechain_wealth =
             self.app.node.get_sidechain_wealth().map_err(custom_err)?;
         Ok(sidechain_wealth.to_sat())
     }
 
+    async fn sign_transaction(
+        &self,
+        transaction: thunder_orchard::types::Transaction,
+        broadcast: Option<bool>,
+    ) -> RpcResult<thunder_orchard::types::AuthorizedTransaction> {
+        let authorized =
+            self.app.wallet.authorize(transaction).map_err(custom_err)?;
+        if let Some(true) = broadcast {
+            let () = self
+                .app
+                .submit_transaction(&authorized)
+                .map_err(custom_err)?;
+        }
+        Ok(authorized)
+    }
+
+    async fn submit_transaction(
+        &self,
+        transaction: thunder_orchard::types::AuthorizedTransaction,
+    ) -> RpcResult<Txid> {
+        let () = self
+            .app
+            .submit_transaction(&transaction)
+            .map_err(custom_err)?;
+        Ok(transaction.transaction.txid())
+    }
+
     async fn stop(&self) {
         std::process::exit(0);
-    }
-
-    async fn transparent_transfer(
-        &self,
-        dest: TransparentAddress,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = self
-            .app
-            .wallet
-            .create_transaction(
-                &accumulator,
-                dest,
-                Amount::from_sat(value_sats),
-                Amount::from_sat(fee_sats),
-            )
-            .map_err(custom_err)?;
-        let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(custom_err)?;
-        Ok(txid)
-    }
-
-    async fn unshield(
-        &self,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = tokio::task::block_in_place(|| {
-            self.app.wallet.create_unshield_transaction(
-                &accumulator,
-                Amount::from_sat(value_sats),
-                Amount::from_sat(fee_sats),
-            )
-        })
-        .map_err(custom_err)?;
-        let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(custom_err)?;
-        Ok(txid)
-    }
-
-    async fn withdraw(
-        &self,
-        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount_sats: u64,
-        fee_sats: u64,
-        mainchain_fee_sats: u64,
-    ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = self
-            .app
-            .wallet
-            .create_withdrawal(
-                &accumulator,
-                mainchain_address,
-                Amount::from_sat(amount_sats),
-                Amount::from_sat(mainchain_fee_sats),
-                Amount::from_sat(fee_sats),
-            )
-            .map_err(custom_err)?;
-        let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(custom_err)?;
-        Ok(txid)
     }
 }
 

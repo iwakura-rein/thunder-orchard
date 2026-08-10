@@ -17,6 +17,7 @@ fn create_shield_tx(
     let tx = app
         .wallet
         .create_shield_transaction(&accumulator, amount, fee)?;
+    let tx = app.authorize_orchard_bundle(tx)?;
     app.sign_and_send(tx)?;
     Ok(())
 }
@@ -86,6 +87,7 @@ fn create_unshield_tx(
     let tx =
         app.wallet
             .create_unshield_transaction(&accumulator, amount, fee)?;
+    let tx = app.authorize_orchard_bundle(tx)?;
     app.sign_and_send(tx)?;
     Ok(())
 }
@@ -151,13 +153,13 @@ impl ShieldUnshield {
         egui::Panel::left("Shield")
             .exact_size(ui.available_width() / 2.)
             .resizable(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.heading("Shield");
                     self.shield.show(app, ui);
                 })
             });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("Unshield");
                 self.unshield.show(app, ui);

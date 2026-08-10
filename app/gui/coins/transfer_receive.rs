@@ -18,13 +18,16 @@ fn create_transfer(
 ) -> anyhow::Result<()> {
     let accumulator = app.node.get_tip_accumulator()?;
     let tx = match dest {
-        Address::Shielded(dest) => app.wallet.create_shielded_transaction(
-            &accumulator,
-            dest,
-            amount,
-            fee,
-            [0u8; 512],
-        )?,
+        Address::Shielded(dest) => {
+            let tx = app.wallet.create_shielded_transaction(
+                &accumulator,
+                dest,
+                amount,
+                fee,
+                [0u8; 512],
+            )?;
+            app.authorize_orchard_bundle(tx)?
+        }
         Address::Transparent(dest) => {
             app.wallet
                 .create_transaction(&accumulator, dest, amount, fee)?
@@ -215,13 +218,13 @@ impl TransferReceive {
         egui::Panel::left("transfer")
             .exact_size(ui.available_width() / 2.)
             .resizable(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.heading("Transfer");
                     self.transfer.show(app, ui);
                 })
             });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("Receive");
                 self.receive.show(app, ui);
