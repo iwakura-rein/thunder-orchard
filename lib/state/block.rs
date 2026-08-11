@@ -3,17 +3,15 @@
 use std::borrow::Cow;
 
 use rayon::prelude::*;
-use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::{RoTxn, RwTxn};
 
 use crate::{
     state::{Error, PrevalidatedBlock, State, error},
     types::{
-        Accumulator, AccumulatorDiff, AmountOverflowError, Body, GetValue as _,
-        Header, InPoint, OutPoint, OutPointKey, Output, PointedOutput,
-        SpentOutput, Transaction, orchard,
+        Accumulator, AccumulatorDiff, AmountOverflowError, Authorization, Body,
+        GetValue as _, Header, InPoint, OutPoint, OutPointKey, Output,
+        PointedOutput, SpentOutput, Transaction, UtreexoNodeHash, orchard,
     },
-    wallet::Authorization,
 };
 
 /// Calculate total number of inputs across all transactions in a block body
@@ -113,7 +111,7 @@ pub fn validate(
                 })?;
         }
         // hashes of spent utxos, used to verify the utreexo proof
-        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::with_capacity(
+        let mut spent_utxo_hashes = Vec::<UtreexoNodeHash>::with_capacity(
             filled_transaction.transaction.inputs.len(),
         );
         for (_outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
@@ -167,7 +165,7 @@ pub fn validate(
         return Err(Error::AuthorizationError);
     }
     let () = accumulator.apply_diff(accumulator_diff)?;
-    let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
+    let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
         return Err(Error::UtreexoRootsMismatch);
     }
@@ -266,7 +264,7 @@ pub fn prevalidate(
                 })?;
         }
         // hashes of spent utxos, used to verify the utreexo proof
-        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::with_capacity(
+        let mut spent_utxo_hashes = Vec::<UtreexoNodeHash>::with_capacity(
             filled_transaction.transaction.inputs.len(),
         );
         for (_outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
@@ -320,7 +318,7 @@ pub fn prevalidate(
         return Err(Error::AuthorizationError);
     }
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
-    let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
+    let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
         return Err(Error::UtreexoRootsMismatch);
     }
@@ -758,14 +756,12 @@ mod test {
     #[test]
     fn validation_rejects_outpoint_utxo_hash_mismatch() -> anyhow::Result<()> {
         use bitcoin::hashes::Hash as _;
-        use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 
-        use crate::{
+        use crate::types::{
+            Accumulator, AccumulatorDiff, Body, Header, OutPoint, OutPointKey,
+            PointedOutput, Transaction, UtreexoNodeHash,
             authorization::{SigningKey, authorize, get_address},
-            types::{
-                Accumulator, AccumulatorDiff, Body, Header, OutPoint,
-                OutPointKey, PointedOutput, Transaction, hash,
-            },
+            hash,
         };
         let (_temp_dir, env, state) =
             fresh_state("validation_rejects_outpoint_utxo_hash_mismatch")?;
@@ -797,8 +793,8 @@ mod test {
             outpoint: outpoint_b,
             output: output_b.clone(),
         };
-        let leaf_a: BitcoinNodeHash = (&pointed_a).into();
-        let leaf_b: BitcoinNodeHash = (&pointed_b).into();
+        let leaf_a: UtreexoNodeHash = (&pointed_a).into();
+        let leaf_b: UtreexoNodeHash = (&pointed_b).into();
         let hash_b: crate::types::Hash = hash(&pointed_b); // input's utxo_hash
 
         // Helper: build a fresh accumulator seeded with leaves A and B

@@ -3,52 +3,27 @@ use std::{collections::HashMap, io::Cursor};
 use bitcoin::amount::CheckedSum;
 use borsh::{self, BorshDeserialize, BorshSerialize};
 use educe::Educe;
+#[cfg(feature = "heed")]
 use heed::{BoxedError, BytesDecode, BytesEncode};
 use rustreexo::accumulator::{
-    mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
+    mem_forest::MemForest, proof::Proof as UtreexoProof,
 };
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use utoipa::ToSchema;
 
 use crate::{
-    authorization::Authorization,
-    types::{
-        AmountOverflowError, Hash, M6id, MerkleRoot, TransparentAddress, Txid,
-        hash, hash_with_scratch_buffer,
-        orchard::{self, BundleAuthorization},
+    AmountOverflowError, Authorization, ComputeFeeError, Hash, M6id,
+    MerkleRoot, TransparentAddress, Txid, UtreexoNodeHash, hash,
+    hash_with_scratch_buffer,
+    orchard::{self, BundleAuthorization},
+    schema,
+    util::borsh::{
+        deserialize as borsh_deserialize, serialize as borsh_serialize,
     },
 };
 
 pub trait GetValue {
     fn get_value(&self) -> bitcoin::Amount;
-}
-
-fn borsh_serialize_bitcoin_outpoint<W>(
-    outpoint: &bitcoin::OutPoint,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    let bitcoin::OutPoint { txid, vout } = outpoint;
-    let txid_bytes: &[u8; 32] = txid.as_ref();
-    borsh::BorshSerialize::serialize(&(txid_bytes, vout), writer)
-}
-
-fn borsh_deserialize_bitcoin_outpoint<R>(
-    reader: &mut R,
-) -> borsh::io::Result<bitcoin::OutPoint>
-where
-    R: borsh::io::Read,
-{
-    use bitcoin::hashes::Hash as BitcoinHash;
-    let (txid_bytes, vout): ([u8; 32], u32) =
-        <([u8; 32], u32) as BorshDeserialize>::deserialize_reader(reader)?;
-    Ok(bitcoin::OutPoint {
-        txid: bitcoin::Txid::from_byte_array(txid_bytes),
-        vout,
-    })
 }
 
 #[derive(
@@ -78,11 +53,11 @@ pub enum OutPoint {
         vout: u32,
     },
     // Created by mainchain deposits.
-    #[schema(value_type = crate::types::schema::BitcoinOutPoint)]
+    #[schema(value_type = schema::BitcoinOutPoint)]
     Deposit(
         #[borsh(
-            serialize_with = "borsh_serialize_bitcoin_outpoint",
-            deserialize_with = "borsh_deserialize_bitcoin_outpoint"
+            deserialize_with = "borsh_deserialize::bitcoin_outpoint",
+            serialize_with = "borsh_serialize::bitcoin_outpoint"
         )]
         bitcoin::OutPoint,
     ),
@@ -172,7 +147,7 @@ impl AsRef<[u8]> for OutPointKey {
     }
 }
 
-// Database key encoding traits for direct LMDB usage
+#[cfg(feature = "heed")]
 impl<'a> BytesEncode<'a> for OutPointKey {
     type EItem = OutPointKey;
 
@@ -184,6 +159,7 @@ impl<'a> BytesEncode<'a> for OutPointKey {
     }
 }
 
+#[cfg(feature = "heed")]
 impl<'a> BytesDecode<'a> for OutPointKey {
     type DItem = OutPointKey;
 
@@ -205,14 +181,13 @@ impl<'a> BytesDecode<'a> for OutPointKey {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{OUTPOINT_KEY_SIZE, OutPoint, OutPointKey};
+mod test {
+    use bitcoin::hashes::Hash as _;
+
+    use crate::transaction::{OUTPOINT_KEY_SIZE, OutPoint, OutPointKey};
 
     #[test]
     fn check_outpoint_key_size() -> anyhow::Result<()> {
-        use anyhow::ensure;
-        use bitcoin::hashes::Hash as BitcoinHash;
-
         let variants = [
             OutPoint::Regular {
                 txid: Default::default(),
@@ -230,7 +205,7 @@ mod tests {
 
         for op in variants {
             let serialized = borsh::to_vec(&op)?;
-            ensure!(
+            anyhow::ensure!(
                 serialized.len() == OUTPOINT_KEY_SIZE,
                 "unexpected serialized size: {}",
                 serialized.len()
@@ -238,7 +213,7 @@ mod tests {
 
             let key = OutPointKey::from(op);
             let decoded = OutPoint::from(key);
-            ensure!(decoded == op);
+            anyhow::ensure!(decoded == op);
         }
 
         Ok(())
@@ -248,10 +223,12 @@ mod tests {
     // fee, since both leave the treasury
     #[test]
     fn withdrawal_value_includes_main_fee() {
-        use super::{
-            Content, FilledTransaction, GetValue, Output, Transaction,
+        use crate::{
+            TransparentAddress,
+            transaction::{
+                Content, FilledTransaction, GetValue, Output, Transaction,
+            },
         };
-        use crate::types::TransparentAddress;
 
         let value = bitcoin::Amount::from_sat(1000);
         let main_fee = bitcoin::Amount::from_sat(300);
@@ -321,6 +298,8 @@ mod content {
     use serde::{Deserialize, Serialize};
     use utoipa::{PartialSchema, ToSchema};
 
+    use crate::{GetValue, schema};
+
     /// Default representation for Serde
     #[derive(Deserialize, Serialize)]
     enum DefaultRepr {
@@ -349,7 +328,7 @@ mod content {
             #[serde(rename = "main_fee_sats")]
             #[schema(value_type = u64)]
             main_fee: bitcoin::Amount,
-            #[schema(value_type = crate::types::schema::BitcoinAddr)]
+            #[schema(value_type = schema::BitcoinAddr)]
             main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         },
     }
@@ -509,12 +488,12 @@ mod content {
             matches!(self, Self::Withdrawal { .. })
         }
 
-        pub(in crate::types) fn schema_ref() -> utoipa::openapi::Ref {
+        pub(crate) fn schema_ref() -> utoipa::openapi::Ref {
             utoipa::openapi::Ref::new("OutputContent")
         }
     }
 
-    impl crate::wallet::GetValue for Content {
+    impl GetValue for Content {
         #[inline(always)]
         fn get_value(&self) -> bitcoin::Amount {
             match self {
@@ -674,7 +653,7 @@ pub struct PointedOutput {
     pub output: Output,
 }
 
-impl From<&PointedOutput> for BitcoinNodeHash {
+impl From<&PointedOutput> for UtreexoNodeHash {
     fn from(pointed_output: &PointedOutput) -> Self {
         Self::new(hash(pointed_output))
     }
@@ -688,7 +667,7 @@ pub struct PointedOutputRef<'a> {
     pub output: &'a Output,
 }
 
-impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
+impl From<PointedOutputRef<'_>> for UtreexoNodeHash {
     fn from(pointed_output: PointedOutputRef) -> Self {
         Self::new(hash(&pointed_output))
     }
@@ -712,12 +691,12 @@ where
     pub inputs: Vec<(OutPoint, Hash)>,
     /// Utreexo proof for inputs
     #[borsh(skip)]
-    #[schema(value_type = crate::types::schema::UtreexoProof)]
-    pub proof: Proof,
+    #[schema(value_type = schema::UtreexoProof)]
+    pub proof: UtreexoProof,
     pub outputs: Vec<Output>,
     #[borsh(bound(serialize = "orchard::Bundle<Auth>: BorshSerialize"))]
     #[schema(schema_with =
-        <crate::types::schema::Optional::<
+        <schema::Optional::<
             orchard::Bundle<Auth>
         > as utoipa::PartialSchema>::schema
     )]
@@ -809,19 +788,6 @@ where
 pub struct SpentOutput<O = Output> {
     pub output: O,
     pub inpoint: InPoint,
-}
-
-#[derive(Debug, Error)]
-pub enum ComputeFeeError {
-    #[error("underfunded; value in ({value_in}) < value out ({value_out})")]
-    Underfunded {
-        value_in: bitcoin::Amount,
-        value_out: bitcoin::Amount,
-    },
-    #[error("value in overflow")]
-    ValueInOverflow(#[source] AmountOverflowError),
-    #[error("value out overflow")]
-    ValueOutOverflow(#[source] AmountOverflowError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -940,12 +906,12 @@ impl Body {
     // Modifies the memforest, without checking tx proofs
     pub fn modify_memforest(
         &self,
-        memforest: &mut MemForest<BitcoinNodeHash>,
+        memforest: &mut MemForest<UtreexoNodeHash>,
     ) -> Result<(), String> {
         // New leaves for the accumulator
-        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
+        let mut accumulator_add = Vec::<UtreexoNodeHash>::new();
         // Accumulator leaves to delete
-        let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
+        let mut accumulator_del = Vec::<UtreexoNodeHash>::new();
         let merkle_root = self.compute_merkle_root();
         for (vout, output) in self.coinbase.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {

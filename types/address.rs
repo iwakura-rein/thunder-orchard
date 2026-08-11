@@ -11,15 +11,10 @@ use serde_with::{DeserializeAs, DisplayFromStr, SerializeAs};
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::types::THIS_SIDECHAIN;
-
-#[derive(Debug, thiserror::Error)]
-pub enum TransparentAddressParseError {
-    #[error("bs58 error")]
-    Bs58(#[from] bitcoin::base58::InvalidCharacterError),
-    #[error("wrong address length {0} != 20")]
-    WrongLength(usize),
-}
+use crate::{
+    THIS_SIDECHAIN,
+    error::ParseTransparentAddress as ParseTransparentAddressError,
+};
 
 #[derive(
     BorshDeserialize, BorshSerialize, Clone, Copy, Eq, Hash, PartialEq, ToSchema,
@@ -62,7 +57,7 @@ impl From<[u8; 20]> for TransparentAddress {
 }
 
 impl FromStr for TransparentAddress {
-    type Err = TransparentAddressParseError;
+    type Err = ParseTransparentAddressError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let address = bitcoin::base58::decode(s)?;
         Ok(TransparentAddress(address.try_into().map_err(
@@ -181,11 +176,16 @@ impl<'de> Deserialize<'de> for ShieldedAddress {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error("invalid address (`{}`)", hex::encode(.0))]
+        #[repr(transparent)]
+        struct InvalidAddress([u8; 43]);
+
         if deserializer.is_human_readable() {
             let s = <&'de str>::deserialize(deserializer)?;
             Self::bech32m_decode(s).map_err(|err| {
-                let err = anyhow::anyhow!("{err:#}");
-                <D::Error as serde::de::Error>::custom(err)
+                let err_msg = format!("{:+}", errors::fmt(&err));
+                <D::Error as serde::de::Error>::custom(err_msg)
             })
         } else {
             let bytes: [u8; 43] =
@@ -194,9 +194,7 @@ impl<'de> Deserialize<'de> for ShieldedAddress {
             {
                 Some(addr) => Ok(Self(addr)),
                 None => {
-                    let bytes_hex = hex::encode(bytes);
-                    let err =
-                        anyhow::anyhow!("Invalid address (`{bytes_hex}`)");
+                    let err = InvalidAddress(bytes);
                     Err(<D::Error as serde::de::Error>::custom(err))
                 }
             }
@@ -228,9 +226,9 @@ impl Serialize for ShieldedAddress {
 
 #[derive(Debug, Error)]
 #[error(
-    "Failed to parse address: ({:#}), ({:#})",
-    anyhow::anyhow!("{:#}", .shielded),
-    anyhow::anyhow!("{:#}", .transparent),
+    "Failed to parse address: ({:+}), ({:+})",
+    errors::fmt(.shielded),
+    errors::fmt(.transparent),
 )]
 pub struct AddressParseError {
     shielded: <ShieldedAddress as FromStr>::Err,

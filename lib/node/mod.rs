@@ -17,13 +17,14 @@ use tonic::transport::Channel;
 use crate::{
     archive::Archive,
     mempool::{self, MemPool},
-    net::{Net, Peer},
+    net::Net,
     state::{self, State},
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
         Network, OutPoint, OutPointKey, Output, SpentOutput, Tip, Transaction,
         TransparentAddress, Txid, WithdrawalBundle,
+        net::Peer,
         proto::{self, mainchain},
     },
     util::Watchable,

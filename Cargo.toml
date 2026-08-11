@@ -1,6 +1,6 @@
 [workspace]
 exclude = ["bip300301_enforcer"]
-members = ["app", "cli", "integration_tests", "lib", "rpc-api"]
+members = ["app", "cli", "integration_tests", "lib", "rpc-api", "types"]
 resolver = "2"
 
 [workspace.package]
@@ -29,6 +29,7 @@ dirs = "5.0.1"
 dotenvy = "0.15.7"
 ed25519-dalek = "2.1.1"
 educe = { version = "0.6.0", default-features = false }
+errors = "0.1.0"
 eframe = { version = "0.35.0", default-features = false }
 error-fatality = "0.1.2"
 fallible-iterator = "0.3.0"

@@ -6,17 +6,17 @@ use serde::{Deserializer, Serializer};
 use serde_with::{DeserializeAs, Same, SerializeAs};
 
 /// Abstract over how a field is owned
-pub(in crate::types::orchard) trait Ownership<'a> {
+pub(in crate::orchard) trait Ownership<'a> {
     type Value<T: 'a>: Borrow<T>;
 }
 
 /// Abstract over how a slice is owned
-pub(in crate::types::orchard) trait SliceOwnership<'a> {
+pub(in crate::orchard) trait SliceOwnership<'a> {
     type Value<T: 'a>: Borrow<[T]>;
 }
 
 /// Marker type for borrowed values
-pub(in crate::types::orchard) struct Borrowed<'a>(PhantomData<&'a ()>);
+pub(in crate::orchard) struct Borrowed<'a>(PhantomData<&'a ()>);
 
 impl<'a, 'b> Ownership<'a> for Borrowed<'b>
 where
@@ -33,14 +33,14 @@ where
 }
 
 /// Marker type for owned values
-pub(in crate::types::orchard) struct Owned;
+pub(in crate::orchard) struct Owned;
 
 impl<'a> Ownership<'a> for Owned {
     type Value<T: 'a> = T;
 }
 
 /// Marker type for an owned Vec
-pub(in crate::types::orchard) struct OwnedVec;
+pub(in crate::orchard) struct OwnedVec;
 
 impl<'a> SliceOwnership<'a> for OwnedVec {
     type Value<T: 'a> = Vec<T>;
@@ -48,7 +48,7 @@ impl<'a> SliceOwnership<'a> for OwnedVec {
 
 /// Combinator that uses seperate encodings for deserialization and
 /// serialization
-pub(in crate::types::orchard) struct With<De, Ser>(PhantomData<(De, Ser)>);
+pub(in crate::orchard) struct With<De, Ser>(PhantomData<(De, Ser)>);
 
 impl<'de, T, De, Ser> DeserializeAs<'de, T> for With<De, Ser>
 where
@@ -74,35 +74,48 @@ where
     }
 }
 
-/// Combinator that uses the specified encoding by reference.
-pub(in crate::types::orchard) struct SerializeWithRef<As>(PhantomData<As>);
+#[cfg(feature = "shardtree")]
+pub(in crate::orchard) mod serialize_with_ref {
+    use std::marker::PhantomData;
 
-impl<'de, T, As> DeserializeAs<'de, T> for SerializeWithRef<As>
-where
-    As: DeserializeAs<'de, T>,
-{
-    fn deserialize_as<D>(deserializer: D) -> Result<T, D::Error>
+    use serde::{Deserializer, Serializer};
+    use serde_with::{DeserializeAs, SerializeAs};
+
+    /// Combinator that uses the specified encoding by reference.
+    pub(in crate::orchard) struct SerializeWithRef<As>(PhantomData<As>);
+
+    impl<'de, T, As> DeserializeAs<'de, T> for SerializeWithRef<As>
     where
-        D: Deserializer<'de>,
+        As: DeserializeAs<'de, T>,
     {
-        As::deserialize_as(deserializer)
+        fn deserialize_as<D>(deserializer: D) -> Result<T, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            As::deserialize_as(deserializer)
+        }
+    }
+
+    impl<'a, T, As> SerializeAs<&'a T> for SerializeWithRef<As>
+    where
+        As: SerializeAs<T>,
+    {
+        fn serialize_as<S>(
+            source: &&'a T,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            <&As as SerializeAs<_>>::serialize_as(source, serializer)
+        }
     }
 }
-
-impl<'a, T, As> SerializeAs<&'a T> for SerializeWithRef<As>
-where
-    As: SerializeAs<T>,
-{
-    fn serialize_as<S>(source: &&'a T, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        <&As as SerializeAs<_>>::serialize_as(source, serializer)
-    }
-}
+#[cfg(feature = "shardtree")]
+pub(in crate::orchard) use serialize_with_ref::SerializeWithRef;
 
 /// Combinator that uses `Borrow<T>`, then applies the specified encoding.
-pub(in crate::types::orchard) struct SerializeBorrow<T, As = Same>(
+pub(in crate::orchard) struct SerializeBorrow<T, As = Same>(
     PhantomData<(As, T)>,
 )
 where
@@ -138,9 +151,7 @@ where
 /// serialization, respectively.
 /// Similar to [`serde_with::TryFromInto`], but supports composition with
 /// other combinators
-pub(in crate::types::orchard) struct ComposeTryInto<T, As>(
-    PhantomData<(T, As)>,
-);
+pub(in crate::orchard) struct ComposeTryInto<T, As>(PhantomData<(T, As)>);
 
 impl<'de, T, U, As> DeserializeAs<'de, U> for ComposeTryInto<T, As>
 where

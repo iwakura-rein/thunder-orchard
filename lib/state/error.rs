@@ -108,7 +108,7 @@ impl From<db::TryGet> for ValidateOrchardAnchor {
 pub enum ValidateTransaction {
     #[error("failed to verify authorizations")]
     #[fatal(forward)]
-    Authorization(#[from] crate::authorization::Error),
+    Authorization(#[from] crate::types::AuthorizationError),
     #[error(transparent)]
     #[fatal(forward)]
     Filled(#[from] ValidateFilledTransaction),

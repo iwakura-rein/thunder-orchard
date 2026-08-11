@@ -13,11 +13,9 @@
 use bitcoin::hashes::Hash as _;
 use bytemuck::TransparentWrapper as _;
 use incrementalmerkletree::{Hashable, Level};
-use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::RoTxn;
 
 use crate::{
-    authorization,
     state::{
         State,
         error::{self, Error},
@@ -26,7 +24,7 @@ use crate::{
     types::{
         AccumulatorDiff, AuthorizedTransaction, Body, Header, OutPoint, Output,
         OutputContent, PointedOutput, Transaction, TransparentAddress,
-        orchard as o,
+        UtreexoNodeHash, UtreexoProof, authorization, orchard as o,
     },
 };
 
@@ -109,7 +107,7 @@ fn forge_spend() -> (
 /// value_balance = +FORGED_SATS, and emit a transparent UTXO of that value.
 fn build_attack_tx(
     attacker_addr: TransparentAddress,
-    empty_utreexo_proof: rustreexo::accumulator::proof::Proof,
+    empty_utreexo_proof: UtreexoProof,
 ) -> AuthorizedTransaction {
     let (fvk, sk, note, path, anchor) = forge_spend();
 
@@ -163,7 +161,7 @@ fn expected_roots(
     state: &State,
     rotxn: &RoTxn,
     body: &Body,
-) -> Vec<BitcoinNodeHash> {
+) -> Vec<UtreexoNodeHash> {
     let mut acc = state.get_accumulator(rotxn).unwrap();
     let mut diff = AccumulatorDiff::default();
     let merkle_root = body.compute_merkle_root();

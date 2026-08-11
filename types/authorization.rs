@@ -1,20 +1,22 @@
 use borsh::BorshSerialize;
-use error_fatality::{Fatality, Split};
 use rayon::{
     iter::{IntoParallelRefIterator as _, ParallelIterator as _},
     slice::ParallelSlice as _,
 };
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::types::{
-    AuthorizedTransaction, Body, Transaction, TransparentAddress, orchard,
+use crate::{
+    AuthorizedTransaction, Body, Transaction, TransparentAddress,
+    error::Authorization as Error, orchard,
+    util::borsh::serialize as borsh_serialize,
 };
 
-pub use ed25519_dalek::{
-    Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey,
-};
+pub use ed25519_dalek::{Signer, Verifier};
+
+pub type Signature = ed25519_dalek::Signature;
+pub type SigningKey = ed25519_dalek::SigningKey;
+pub type VerifyingKey = ed25519_dalek::VerifyingKey;
 
 pub fn get_address(verifying_key: &VerifyingKey) -> TransparentAddress {
     let mut hasher = blake3::Hasher::new();
@@ -22,58 +24,6 @@ pub fn get_address(verifying_key: &VerifyingKey) -> TransparentAddress {
     let mut output: [u8; 20] = [0; 20];
     reader.fill(&mut output);
     TransparentAddress(output)
-}
-
-/// Non-fatal variants indicate tx rejection reason
-#[derive(Debug, Error, Fatality, Split)]
-pub enum Error {
-    #[error("borsh serialization error")]
-    #[fatal(true)]
-    BorshSerialize(#[from] borsh::io::Error),
-    #[error("ed25519_dalek error")]
-    #[fatal(false)]
-    DalekError(#[from] SignatureError),
-    #[error("not enough authorizations")]
-    #[fatal(false)]
-    NotEnoughAuthorizations,
-    #[error("too many authorizations")]
-    #[fatal(false)]
-    TooManyAuthorizations,
-    #[error("Orchard bundle proof verification error")]
-    #[fatal(false)]
-    OrchardProof(#[from] orchard::BundleProofVerificationError),
-    #[error("Orchard signature verification error")]
-    #[fatal(false)]
-    OrchardSignature(#[from] orchard::SignatureVerificationError),
-    #[error(
-        "wrong key for address: address = {address},
-             hash(verifying_key) = {hash_verifying_key}"
-    )]
-    #[fatal(false)]
-    WrongKeyForAddress {
-        address: TransparentAddress,
-        hash_verifying_key: TransparentAddress,
-    },
-}
-
-fn borsh_serialize_verifying_key<W>(
-    vk: &VerifyingKey,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    borsh::BorshSerialize::serialize(&vk.to_bytes(), writer)
-}
-
-fn borsh_serialize_signature<W>(
-    sig: &Signature,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    borsh::BorshSerialize::serialize(&sig.to_bytes(), writer)
 }
 
 #[derive(
@@ -87,10 +37,10 @@ where
     ToSchema,
 )]
 pub struct Authorization {
-    #[borsh(serialize_with = "borsh_serialize_verifying_key")]
+    #[borsh(serialize_with = "borsh_serialize::verifying_key")]
     #[schema(value_type = String)]
     pub verifying_key: VerifyingKey,
-    #[borsh(serialize_with = "borsh_serialize_signature")]
+    #[borsh(serialize_with = "borsh_serialize::signature")]
     #[schema(value_type = String)]
     pub signature: Signature,
 }

@@ -6,13 +6,9 @@ use jsonrpsee::{
     server::Server,
     types::ErrorObject,
 };
-use thunder_orchard::{
-    net::Peer,
-    types::{
-        PointedOutput, ShieldedAddress, SpentOutput, TransparentAddress, Txid,
-        WithdrawalBundle,
-    },
-    wallet::Balance,
+use thunder_orchard::types::{
+    PointedOutput, ShieldedAddress, SpentOutput, TransparentAddress, Txid,
+    WithdrawalBundle, net::Peer, wallet::Balance,
 };
 use thunder_orchard_app_rpc_api::{GetTransactionResponse, RpcServer};
 use tower_http::{

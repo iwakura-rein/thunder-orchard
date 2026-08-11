@@ -16,7 +16,10 @@ use tracing::instrument;
 use crate::{
     archive::Archive,
     state::State,
-    types::{AuthorizedTransaction, Network, THIS_SIDECHAIN, VERSION, Version},
+    types::{
+        AuthorizedTransaction, Network, THIS_SIDECHAIN, VERSION, Version,
+        net::{Peer, PeerConnectionStatus},
+    },
 };
 
 pub mod error;
@@ -30,8 +33,8 @@ use peer::{
 };
 pub use peer::{
     ConnectionError as PeerConnectionError, Info as PeerConnectionInfo,
-    InternalMessage as PeerConnectionMessage, Peer, PeerConnectionStatus,
-    PeerStateId, Request as PeerRequest, ResponseMessage as PeerResponse,
+    InternalMessage as PeerConnectionMessage, PeerStateId,
+    Request as PeerRequest, ResponseMessage as PeerResponse,
     message as peer_message,
 };
 

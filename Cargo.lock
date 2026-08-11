@@ -2032,6 +2032,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "errors"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8d4e67af827b736a7f90b55da24181f4d504c302a352918b65c36e6b0fdcc89"
+
+[[package]]
 name = "escape8259"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4454,9 +4460,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.6"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -6416,9 +6422,9 @@ dependencies = [
 
 [[package]]
 name = "shardtree"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "637e95dcd06bc1bb3f86ed9db1e1832a70125f32daae071ef37dcb7701b7d4fe"
+checksum = "359e552886ae54d1642091645980d83f7db465fd9b5b0248e3680713c1773388"
 dependencies = [
  "bitflags 2.13.1",
  "either",
@@ -6890,19 +6896,16 @@ dependencies = [
  "async-lock",
  "bincode",
  "bitcoin",
- "blake3",
  "borsh",
  "bytemuck",
  "bytes",
  "chrono",
- "clap",
  "ed25519-dalek",
  "educe 0.6.0",
  "error-fatality",
  "fallible-iterator",
  "futures",
  "governor",
- "halo2_proofs",
  "hashlink 0.12.1",
  "heed",
  "hex",
@@ -6919,19 +6922,15 @@ dependencies = [
  "rand 0.8.6",
  "rayon",
  "rcgen",
- "reddsa",
  "rustls",
- "rustreexo",
  "semver",
  "serde",
  "serde_json",
- "serde_with",
- "shardtree",
  "smallvec",
  "sneed",
- "strum 0.27.2",
  "temp-dir",
  "thiserror 2.0.19",
+ "thunder_orchard_types",
  "tiny-bip39",
  "tokio",
  "tokio-stream",
@@ -6941,8 +6940,6 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "transitive",
- "utoipa",
- "zcash_note_encryption",
  "zip32",
 ]
 
@@ -7020,7 +7017,7 @@ dependencies = [
  "l2l-openapi",
  "serde",
  "serde_json",
- "thunder_orchard",
+ "thunder_orchard_types",
  "utoipa",
 ]
 
@@ -7045,6 +7042,47 @@ dependencies = [
  "tracing",
  "tracing-indicatif",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "thunder_orchard_types"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "blake3",
+ "borsh",
+ "bytemuck",
+ "clap",
+ "ed25519-dalek",
+ "educe 0.6.0",
+ "error-fatality",
+ "errors",
+ "fallible-iterator",
+ "halo2_proofs",
+ "hashlink 0.12.1",
+ "heed",
+ "hex",
+ "incrementalmerkletree",
+ "nonempty 0.11.0",
+ "orchard",
+ "parking_lot",
+ "rand 0.8.6",
+ "rayon",
+ "reddsa",
+ "rustreexo",
+ "semver",
+ "serde",
+ "serde_with",
+ "shardtree",
+ "smallvec",
+ "sneed",
+ "strum 0.27.2",
+ "thiserror 2.0.19",
+ "tracing",
+ "transitive",
+ "utoipa",
+ "zcash_note_encryption",
 ]
 
 [[package]]

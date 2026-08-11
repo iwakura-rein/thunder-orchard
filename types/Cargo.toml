@@ -1,0 +1,69 @@
+[build-dependencies]
+
+[dependencies]
+bitcoin = { workspace = true, features = ["serde"] }
+blake3 = { workspace = true }
+borsh = { workspace = true, features = ["derive"] }
+bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }
+clap = { workspace = true, features = ["derive"], optional = true }
+ed25519-dalek = { workspace = true, features = ["batch", "serde"] }
+educe = { workspace = true, features = ["Clone", "Debug", "Default"] }
+error-fatality = { workspace = true }
+errors = { workspace = true }
+fallible-iterator = { workspace = true, optional = true }
+halo2_proofs = { workspace = true }
+hashlink = { workspace = true, features = ["serde_impl"] }
+heed = { workspace = true, optional = true }
+hex = { workspace = true, features = ["serde"] }
+incrementalmerkletree = { workspace = true }
+nonempty = { workspace = true, features = ["serialize"] }
+orchard = { workspace = true }
+parking_lot = { workspace = true, optional = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+reddsa = { workspace = true, features = ["thiserror"] }
+rustreexo = { workspace = true, features = ["with-serde"] }
+semver = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true, features = ["hex"] }
+shardtree = { workspace = true, optional = true }
+smallvec = { workspace = true, features = ["write"] }
+sneed = { workspace = true, optional = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+transitive = { workspace = true, optional = true }
+utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
+zcash_note_encryption = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+
+[features]
+clap = ["dep:clap"]
+default = []
+heed = ["dep:heed", "dep:sneed"]
+shardtree = [
+    "dep:fallible-iterator",
+    "dep:parking_lot",
+    "dep:shardtree",
+    "dep:sneed",
+    "dep:transitive",
+    "heed",
+    "serde/rc",
+]
+
+[lib]
+name = "thunder_orchard_types"
+path = "lib.rs"
+
+[lints]
+workspace = true
+
+[package]
+name = "thunder_orchard_types"
+authors.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+version.workspace = true
