@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::BorrowMut, collections::HashMap, sync::Arc};
 
 use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
@@ -325,6 +325,7 @@ impl App {
             config.net_addr,
             cusf_mainchain,
             cusf_mainchain_wallet,
+            config.network_magic_override,
             config.network,
             &runtime,
         )?;
@@ -405,15 +406,16 @@ impl App {
                 orchard_bundle,
             )?;
         }
-        self.node.submit_transaction(&authorized_transaction)?;
+        self.node.submit_transaction(authorized_transaction)?;
         let () = self.update(wallet_rwtxn)?;
         Ok(())
     }
 
-    pub fn submit_transaction(
-        &self,
-        tx: &thunder_orchard::types::AuthorizedTransaction,
-    ) -> Result<(), Error> {
+    /// Regenerate proofs and submit transaction
+    pub fn submit_transaction<Tx>(&self, tx: Tx) -> Result<(), Error>
+    where
+        Tx: BorrowMut<thunder_orchard::types::AuthorizedTransaction>,
+    {
         self.node.submit_transaction(tx)?;
         let wallet_rwtxn =
             self.wallet.env().write_txn().map_err(wallet::Error::from)?;

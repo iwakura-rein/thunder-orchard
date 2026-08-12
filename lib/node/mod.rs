@@ -1,5 +1,5 @@
 use std::{
-    borrow::Cow,
+    borrow::{BorrowMut, Cow},
     collections::{HashMap, HashSet},
     net::SocketAddr,
     path::Path,
@@ -17,13 +17,14 @@ use tonic::transport::Channel;
 use crate::{
     archive::Archive,
     mempool::{self, MemPool},
-    net::{Net, Peer},
+    net::Net,
     state::{self, State},
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
         Network, OutPoint, OutPointKey, Output, SpentOutput, Tip, Transaction,
         TransparentAddress, Txid, WithdrawalBundle,
+        net::Peer,
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -61,6 +62,7 @@ where
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
         >,
+        magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
         network: Network,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
@@ -118,8 +120,14 @@ where
                 archive.clone(),
                 cusf_mainchain.clone(),
             );
-        let (net, peer_info_rx) =
-            Net::new(&env, archive.clone(), network, state.clone(), bind_addr)?;
+        let (net, peer_info_rx) = Net::new(
+            &env,
+            archive.clone(),
+            magic_bytes_override,
+            network,
+            state.clone(),
+            bind_addr,
+        )?;
 
         let net_task = NetTaskHandle::new(
             runtime,
@@ -187,17 +195,26 @@ where
         Ok(self.state.try_get_tip(&rotxn).map_err(state::Error::from)?)
     }
 
-    pub fn submit_transaction(
+    /// Regenerate proofs and submit transaction
+    pub fn submit_transaction<Tx>(
         &self,
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), error::SubmitTransaction> {
+        mut transaction: Tx,
+    ) -> Result<(), error::SubmitTransaction>
+    where
+        Tx: BorrowMut<AuthorizedTransaction>,
+    {
         {
             let mut rwtxn = self.env.write_txn()?;
-            self.state.validate_transaction(&rwtxn, transaction)?;
-            self.mempool.insert(&mut rwtxn, transaction)?;
+            let () = self.state.regenerate_proof(
+                &rwtxn,
+                &mut transaction.borrow_mut().transaction,
+            )?;
+            self.state
+                .validate_transaction(&rwtxn, transaction.borrow())?;
+            self.mempool.insert(&mut rwtxn, transaction.borrow())?;
             rwtxn.commit()?;
         }
-        self.net.push_tx(Default::default(), transaction);
+        self.net.push_tx(Default::default(), transaction.borrow());
         Ok(())
     }
 
@@ -238,6 +255,18 @@ where
             }
         }
         Ok(spent)
+    }
+
+    pub fn get_stxos_by_addresses(
+        &self,
+        addresses: &HashSet<TransparentAddress>,
+    ) -> Result<HashMap<OutPoint, SpentOutput>, Error> {
+        let rotxn = self.env.read_txn()?;
+        let stxos = self
+            .state
+            .get_stxos_by_addresses(&rotxn, addresses)
+            .map_err(DbError::from)?;
+        Ok(stxos)
     }
 
     pub fn get_utxos_by_addresses(

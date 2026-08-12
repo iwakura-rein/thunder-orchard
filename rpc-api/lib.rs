@@ -1,18 +1,15 @@
 //! RPC API
 
-use std::net::SocketAddr;
+use std::{collections::HashSet, net::SocketAddr};
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
 use serde::{Deserialize, Serialize};
-use thunder_orchard::{
-    net::Peer,
-    types::{
-        BlockHash, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
-        WithdrawalBundle, schema as thunder_orchard_schema, transaction,
-    },
-    wallet::Balance,
+use thunder_orchard_types::{
+    BlockHash, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
+    PointedOutput, ShieldedAddress, SpentOutput, Transaction,
+    TransparentAddress, Txid, WithdrawalBundle, net::Peer,
+    schema as thunder_orchard_schema, transaction, wallet::Balance,
 };
 use utoipa::ToSchema;
 
@@ -99,7 +96,7 @@ pub trait Rpc {
     async fn create_withdrawal(
         &self,
         #[open_api_method_arg(schema(
-            PartialSchema = "thunder_orchard::types::schema::BitcoinAddr"
+            PartialSchema = "thunder_orchard_schema::BitcoinAddr"
         ))]
         mainchain_address: bitcoin::Address<
             bitcoin::address::NetworkUnchecked,
@@ -135,8 +132,8 @@ pub trait Rpc {
     #[method(name = "get_block")]
     async fn get_block(
         &self,
-        block_hash: thunder_orchard::types::BlockHash,
-    ) -> RpcResult<Option<thunder_orchard::types::Block>>;
+        block_hash: thunder_orchard_types::BlockHash,
+    ) -> RpcResult<Option<thunder_orchard_types::Block>>;
 
     /// Get mainchain blocks that commit to a specified block hash
     #[open_api_method(output_schema(
@@ -145,7 +142,7 @@ pub trait Rpc {
     #[method(name = "get_bmm_inclusions")]
     async fn get_bmm_inclusions(
         &self,
-        block_hash: thunder_orchard::types::BlockHash,
+        block_hash: thunder_orchard_types::BlockHash,
     ) -> RpcResult<Vec<bitcoin::BlockHash>>;
 
     /// Get the best mainchain block hash known by Thunder-Orchard
@@ -159,12 +156,12 @@ pub trait Rpc {
 
     /// Get the best sidechain block hash known by Thunder-Orchard
     #[open_api_method(output_schema(
-        PartialSchema = "schema::Optional<thunder_orchard::types::BlockHash>"
+        PartialSchema = "schema::Optional<thunder_orchard_types::BlockHash>"
     ))]
     #[method(name = "get_best_sidechain_block_hash")]
     async fn get_best_sidechain_block_hash(
         &self,
-    ) -> RpcResult<Option<thunder_orchard::types::BlockHash>>;
+    ) -> RpcResult<Option<thunder_orchard_types::BlockHash>>;
 
     /// Get a new shielded address
     #[method(name = "get_new_shielded_address")]
@@ -180,7 +177,14 @@ pub trait Rpc {
     #[method(name = "get_shielded_wallet_addresses")]
     async fn get_shielded_wallet_addresses(
         &self,
-    ) -> RpcResult<Vec<thunder_orchard::types::orchard::Address>>;
+    ) -> RpcResult<Vec<thunder_orchard_types::orchard::Address>>;
+
+    /// Get stxos for addresses
+    #[method(name = "get_stxos")]
+    async fn get_stxos(
+        &self,
+        addresses: HashSet<TransparentAddress>,
+    ) -> RpcResult<Vec<Pointed<SpentOutput>>>;
 
     /// Get transaction by txid
     #[method(name = "get_transaction")]
@@ -194,6 +198,13 @@ pub trait Rpc {
     async fn get_transparent_wallet_addresses(
         &self,
     ) -> RpcResult<Vec<TransparentAddress>>;
+
+    /// Get utxos for transparent addresses
+    #[method(name = "get_utxos")]
+    async fn get_utxos(
+        &self,
+        addresses: HashSet<TransparentAddress>,
+    ) -> RpcResult<Vec<PointedOutput>>;
 
     /// Get wallet STXOs
     #[method(name = "get_wallet_stxos")]

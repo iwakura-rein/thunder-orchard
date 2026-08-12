@@ -6,7 +6,6 @@ use std::{
 use fallible_iterator::FallibleIterator as _;
 use futures::Stream;
 use heed::types::SerdeBincode;
-use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 use sneed::{
     DatabaseUnique, RoTxn, RwTxn, UnitKey,
@@ -17,14 +16,14 @@ use sneed::{
 use crate::{
     types::{
         self, Accumulator, AmountOverflowError, AmountUnderflowError,
-        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetValue,
-        Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey, Output,
-        PointedOutput, PointedOutputRef, SpentOutput, Transaction,
-        TransparentAddress, VERSION, Version, WithdrawalBundle,
+        Authorization, AuthorizedTransaction, BlockHash, Body,
+        FilledTransaction, GetValue, Header, InPoint, M6id, MerkleRoot,
+        OutPoint, OutPointKey, Output, PointedOutput, PointedOutputRef,
+        SpentOutput, Transaction, TransparentAddress, UtreexoNodeHash,
+        UtreexoProof, VERSION, Version, WithdrawalBundle,
         WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
-    wallet::Authorization,
 };
 
 mod block;
@@ -176,6 +175,25 @@ impl State {
         Ok(height)
     }
 
+    pub fn get_stxos_by_addresses(
+        &self,
+        rotxn: &RoTxn,
+        addresses: &HashSet<TransparentAddress>,
+    ) -> Result<HashMap<OutPoint, SpentOutput>, db_error::Iter> {
+        let stxos: HashMap<OutPoint, _> = self
+            .stxos
+            .iter(rotxn)?
+            .filter_map(|(key, output)| {
+                if addresses.contains(&output.output.address) {
+                    Ok(Some((key.into(), output)))
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect()?;
+        Ok(stxos)
+    }
+
     pub fn get_utxos(
         &self,
         rotxn: &RoTxn,
@@ -252,14 +270,19 @@ impl State {
         &self,
         rotxn: &RoTxn,
         tx: &mut Transaction,
-    ) -> Result<(), Error> {
-        let accumulator = self.get_accumulator(rotxn)?;
+    ) -> Result<(), error::RegenerateProof> {
+        let accumulator = self
+            .utreexo_accumulator
+            .try_get(rotxn, &())?
+            .unwrap_or_default();
         let targets: Vec<_> = tx
             .inputs
             .iter()
             .map(|(_, utxo_hash)| utxo_hash.into())
             .collect();
-        tx.proof = accumulator.prove(&targets)?;
+        tx.proof = accumulator
+            .prove(&targets)
+            .map_err(error::RegenerateProof::Prove)?;
         Ok(())
     }
 
@@ -268,13 +291,13 @@ impl State {
         &self,
         rotxn: &RoTxn,
         utxos: Utxos,
-    ) -> Result<Proof, Error>
+    ) -> Result<UtreexoProof, Error>
     where
         Utxos: IntoIterator<Item = &'a PointedOutput>,
     {
         let accumulator = self.get_accumulator(rotxn)?;
-        let targets: Vec<BitcoinNodeHash> =
-            utxos.into_iter().map(BitcoinNodeHash::from).collect();
+        let targets: Vec<UtreexoNodeHash> =
+            utxos.into_iter().map(UtreexoNodeHash::from).collect();
         let proof = accumulator.prove(&targets)?;
         Ok(proof)
     }

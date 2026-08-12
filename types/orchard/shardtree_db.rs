@@ -24,7 +24,7 @@ use sneed::{
 use thiserror::Error;
 use transitive::Transitive;
 
-use crate::types::{
+use crate::{
     BlockHash,
     orchard::util::{
         Borrowed, Owned, Ownership, SerializeBorrow, SerializeWithRef, With,
@@ -508,7 +508,7 @@ impl From<DbError> for StoreError {
 pub mod db_txn {
     use sneed::{RwTxn, rotxn, rwtxn};
 
-    use crate::types::orchard::shardtree_db::StoreError;
+    use crate::orchard::shardtree_db::StoreError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum CommitError {
@@ -536,7 +536,7 @@ pub mod db_txn {
             Ok(())
         }
 
-        pub(in crate::types::orchard::shardtree_db) fn rwtxn(
+        pub(in crate::orchard::shardtree_db) fn rwtxn(
             &mut self,
         ) -> Result<&mut RwTxn<'a, Tag>, StoreError> {
             match self {

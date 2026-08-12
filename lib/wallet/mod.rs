@@ -21,75 +21,30 @@ use heed::{
 use parking_lot::RwLock;
 use rand::Rng;
 use rayon::prelude::ParallelSliceMut;
-use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use serde::{Deserialize, Serialize};
 use sneed::{
     DbError, EnvError, RoTxnError, RwTxnError, UnitKey, db, env, rotxn, rwtxn,
 };
+use thiserror::Error;
 use tokio_stream::{StreamMap, wrappers::WatchStream};
+use transitive::Transitive;
 
 use crate::{
-    authorization,
     types::{
-        Accumulator, AmountOverflowError, AmountUnderflowError, BlockHash,
-        Body, Header, PointedOutput, Txid, UtreexoError, VERSION, Version,
+        Accumulator, AmountOverflowError, AmountUnderflowError,
+        AuthorizationError, AuthorizedTransaction, BlockHash, Body,
+        GetValue as _, Header, InPoint, OutPoint, Output, OutputContent,
+        PointedOutput, SpentOutput, Transaction, TransparentAddress, Txid,
+        UtreexoError, UtreexoNodeHash, VERSION, Version,
+        authorization::{self, Authorization, get_address},
+        orchard::{self, ShardTree, ShardTreeDb, ShardTreeDbTxn},
         transaction,
+        wallet::Balance,
     },
     util::Watchable,
 };
-pub use crate::{
-    authorization::{Authorization, get_address},
-    types::{
-        AuthorizedTransaction, GetValue, InPoint, OutPoint, Output,
-        OutputContent, SpentOutput, Transaction, TransparentAddress,
-        orchard::{self, ShardTree, ShardTreeDb},
-    },
-};
-
-use self::orchard::ShardTreeDbTxn;
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, utoipa::ToSchema)]
-pub struct Balance {
-    #[serde(
-        rename = "total_shielded_sats",
-        with = "bitcoin::amount::serde::as_sat"
-    )]
-    #[schema(value_type = u64)]
-    pub total_shielded: Amount,
-    #[serde(
-        rename = "total_transparent_sats",
-        with = "bitcoin::amount::serde::as_sat"
-    )]
-    #[schema(value_type = u64)]
-    pub total_transparent: Amount,
-    #[serde(
-        rename = "available_shielded_sats",
-        with = "bitcoin::amount::serde::as_sat"
-    )]
-    #[schema(value_type = u64)]
-    pub available_shielded: Amount,
-    #[serde(
-        rename = "available_transparent_sats",
-        with = "bitcoin::amount::serde::as_sat"
-    )]
-    #[schema(value_type = u64)]
-    pub available_transparent: Amount,
-}
-
-impl Balance {
-    /// Get the total balance
-    pub fn total(&self) -> Amount {
-        self.total_shielded + self.total_transparent
-    }
-
-    /// Get the total available amount
-    pub fn available(&self) -> Amount {
-        self.available_shielded + self.available_transparent
-    }
-}
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[derive(Debug, Error, Transitive)]
 #[transitive(
     from(db::error::Clear, DbError),
     from(db::error::Delete, DbError),
@@ -116,7 +71,7 @@ pub enum Error {
     #[error(transparent)]
     AmountUnderflow(#[from] AmountUnderflowError),
     #[error("authorization error")]
-    Authorization(#[from] crate::authorization::Error),
+    Authorization(#[from] AuthorizationError),
     #[error("bip32 error")]
     Bip32(#[from] bitcoin::bip32::Error),
     #[error("Error creating orchard note commitments DBs")]
@@ -719,7 +674,7 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<BitcoinNodeHash> =
+        let input_utxo_hashes: Vec<UtreexoNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = vec![
@@ -767,7 +722,7 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<BitcoinNodeHash> =
+        let input_utxo_hashes: Vec<UtreexoNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = vec![
@@ -880,7 +835,7 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<BitcoinNodeHash> =
+        let input_utxo_hashes: Vec<UtreexoNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let utreexo_proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = if change != Amount::ZERO {
@@ -1011,7 +966,7 @@ impl Wallet {
     ) -> Result<transaction::MissingOrchardAuthorization, Error> {
         let mut rwtxn = self.env.write_txn()?;
         let inputs = Vec::new();
-        let input_utxo_hashes = Vec::<BitcoinNodeHash>::new();
+        let input_utxo_hashes = Vec::<UtreexoNodeHash>::new();
         let utreexo_proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = vec![Output {
             address: self.get_new_transparent_address(&mut rwtxn)?,
@@ -1652,8 +1607,7 @@ impl Wallet {
                     address: spent_utxo.address,
                 })?;
             let signing_key = self.get_tx_signing_key(&txn, index)?;
-            let signature =
-                crate::authorization::sign(&signing_key, &transaction)?;
+            let signature = authorization::sign(&signing_key, &transaction)?;
             authorizations.push(Authorization {
                 verifying_key: signing_key.verifying_key(),
                 signature,

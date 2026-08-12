@@ -18,7 +18,10 @@ use tokio::{spawn, task::JoinHandle, time::Duration};
 use crate::{
     archive::Archive,
     state::State,
-    types::{AuthorizedTransaction, Hash, Network, Tip, Version, hash, schema},
+    types::{
+        AuthorizedTransaction, Hash, Tip, Version, hash,
+        net::PeerConnectionStatus,
+    },
 };
 
 mod channel_pool;
@@ -84,13 +87,13 @@ impl From<&PeerState> for PeerStateId {
 
 impl std::fmt::Debug for PeerStateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0).fmt(f)
+        const_hex::encode(self.0).fmt(f)
     }
 }
 
 impl std::fmt::Display for PeerStateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0).fmt(f)
+        const_hex::encode(self.0).fmt(f)
     }
 }
 
@@ -140,7 +143,7 @@ where
 #[derive(Clone)]
 pub struct Connection {
     pub(in crate::net) inner: quinn::Connection,
-    pub network: Network,
+    pub magic_bytes: message::MagicBytes,
 }
 
 impl Connection {
@@ -179,16 +182,19 @@ impl Connection {
         Self::MIN_READ_RESPONSE_TIMEOUT.saturating_add(body_allowance)
     }
 
-    pub fn new(connection: quinn::Connection, network: Network) -> Self {
+    pub fn new(
+        connection: quinn::Connection,
+        magic_bytes: message::MagicBytes,
+    ) -> Self {
         Self {
             inner: connection,
-            network,
+            magic_bytes,
         }
     }
 
     pub async fn from_connecting(
         connecting: quinn::Connecting,
-        network: Network,
+        magic_bytes: message::MagicBytes,
     ) -> Result<Self, quinn::ConnectionError> {
         let addr = connecting.remote_address();
         tracing::trace!(%addr, "connecting to peer");
@@ -196,7 +202,7 @@ impl Connection {
         tracing::info!(%addr, "connected successfully to peer");
         Ok(Self {
             inner: connection,
-            network,
+            magic_bytes,
         })
     }
 
@@ -210,7 +216,7 @@ impl Connection {
         rx.read_exact(&mut magic_bytes)
             .await
             .map_err(error::connection::Receive::ReadMagic)?;
-        if magic_bytes != message::magic_bytes(self.network) {
+        if magic_bytes != self.magic_bytes {
             return Err(
                 error::connection::Receive::BadMagic(magic_bytes).into()
             );
@@ -236,7 +242,7 @@ impl Connection {
             "Sending heartbeat"
         );
         let message = RequestMessageRef::from(heartbeat);
-        let mut message_buf = message::magic_bytes(self.network).to_vec();
+        let mut message_buf = self.magic_bytes.to_vec();
         bincode::serialize_into::<&mut Vec<_>, _>(&mut message_buf, &message)?;
         send.write_all(&message_buf).await.map_err(|err| {
             error::connection::Send::Write {
@@ -249,7 +255,7 @@ impl Connection {
     }
 
     async fn receive_response(
-        network: Network,
+        expected_magic_bytes: message::MagicBytes,
         mut recv: RecvStream,
         read_response_limit: NonZeroUsize,
     ) -> ResponseResult {
@@ -258,7 +264,7 @@ impl Connection {
         recv.read_exact(&mut magic_bytes)
             .await
             .map_err(error::connection::Receive::ReadMagic)?;
-        if magic_bytes != message::magic_bytes(network) {
+        if magic_bytes != expected_magic_bytes {
             return Err(
                 error::connection::Receive::BadMagic(magic_bytes).into()
             );
@@ -286,7 +292,7 @@ impl Connection {
             "Sending request"
         );
         let message = RequestMessageRef::from(request);
-        let mut message_buf = message::magic_bytes(self.network).to_vec();
+        let mut message_buf = self.magic_bytes.to_vec();
         bincode::serialize_into::<&mut Vec<_>, _>(&mut message_buf, &message)?;
         send.write_all(&message_buf).await.map_err(|err| {
             error::connection::Send::Write {
@@ -301,7 +307,7 @@ impl Connection {
         // 10MB) block response on a slow or congested link is not aborted.
         let response = match tokio::time::timeout(
             Self::response_read_timeout(read_response_limit),
-            Self::receive_response(self.network, recv, read_response_limit),
+            Self::receive_response(self.magic_bytes, recv, read_response_limit),
         )
         .await
         {
@@ -314,7 +320,7 @@ impl Connection {
     // Send a pre-serialized response, where the response does not include
     // magic bytes
     async fn send_serialized_response(
-        network: Network,
+        magic_bytes: message::MagicBytes,
         mut response_tx: SendStream,
         serialized_response: &[u8],
     ) -> Result<(), error::connection::SendResponse> {
@@ -323,9 +329,7 @@ impl Connection {
             "Sending response"
         );
         async {
-            response_tx
-                .write_all(&message::magic_bytes(network))
-                .await?;
+            response_tx.write_all(&magic_bytes).await?;
             response_tx.write_all(serialized_response).await
         }
         .await
@@ -341,7 +345,7 @@ impl Connection {
     }
 
     async fn send_response(
-        network: Network,
+        magic_bytes: message::MagicBytes,
         mut response_tx: SendStream,
         response: ResponseMessage,
     ) -> Result<(), error::connection::SendResponse> {
@@ -350,7 +354,7 @@ impl Connection {
             send_id = %response_tx.id(),
             "Sending response"
         );
-        let mut message_buf = message::magic_bytes(network).to_vec();
+        let mut message_buf = magic_bytes.to_vec();
         bincode::serialize_into::<&mut Vec<_>, _>(&mut message_buf, &response)?;
         response_tx.write_all(&message_buf).await.map_err(|err| {
             {
@@ -367,43 +371,60 @@ impl Connection {
 pub struct ConnectionContext {
     pub env: sneed::Env<heed::WithoutTls>,
     pub archive: Archive,
-    pub network: Network,
+    pub magic_bytes: message::MagicBytes,
     pub state: State,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::Display,
-    utoipa::ToSchema,
-)]
-pub enum PeerConnectionStatus {
-    /// We're still in the process of initializing the peer connection
-    Connecting,
-    /// The connection is successfully established
-    Connected,
-}
+/// Used to make `bool` representation explicit and unique
+#[repr(transparent)]
+struct StatusRepr(bool);
 
-impl PeerConnectionStatus {
-    /// Convert from boolean representation
-    // Should remain private to this module
-    fn from_repr(repr: bool) -> Self {
+impl From<StatusRepr> for PeerConnectionStatus {
+    fn from(repr: StatusRepr) -> Self {
+        let StatusRepr(repr) = repr;
         match repr {
             false => Self::Connecting,
             true => Self::Connected,
         }
     }
+}
 
-    /// Convert to boolean representation
-    // Should remain private to this module
-    fn as_repr(self) -> bool {
-        match self {
-            Self::Connecting => false,
-            Self::Connected => true,
+impl From<PeerConnectionStatus> for StatusRepr {
+    fn from(status: PeerConnectionStatus) -> Self {
+        match status {
+            PeerConnectionStatus::Connecting => Self(false),
+            PeerConnectionStatus::Connected => Self(true),
+        }
+    }
+}
+
+/// Atomic representation of [`PeerConnectionStatus`]
+#[repr(transparent)]
+pub(in crate::net) struct AtomicStatus {
+    atomic_repr: AtomicBool,
+}
+
+impl AtomicStatus {
+    #[inline(always)]
+    fn load(&self, ordering: atomic::Ordering) -> StatusRepr {
+        StatusRepr(self.atomic_repr.load(ordering))
+    }
+
+    #[inline(always)]
+    fn store(&self, repr: StatusRepr, ordering: atomic::Ordering) {
+        self.atomic_repr.store(repr.0, ordering)
+    }
+}
+
+impl<T> From<T> for AtomicStatus
+where
+    StatusRepr: From<T>,
+{
+    #[inline(always)]
+    fn from(value: T) -> Self {
+        let StatusRepr(repr) = value.into();
+        Self {
+            atomic_repr: AtomicBool::new(repr),
         }
     }
 }
@@ -413,17 +434,15 @@ pub struct ConnectionHandle {
     task: JoinHandle<()>,
     /// Indicates that at least one message has been received successfully
     pub(in crate::net) received_msg_successfully: Arc<AtomicBool>,
-    /// Representation of [`PeerConnectionStatus`]
-    pub(in crate::net) status_repr: Arc<AtomicBool>,
+    /// Atomic representation of [`PeerConnectionStatus`]
+    pub(in crate::net) status: Arc<AtomicStatus>,
     /// Push messages from connection task / net task / node
     pub internal_message_tx: mpsc::UnboundedSender<InternalMessage>,
 }
 
 impl ConnectionHandle {
     pub fn connection_status(&self) -> PeerConnectionStatus {
-        PeerConnectionStatus::from_repr(
-            self.status_repr.load(atomic::Ordering::SeqCst),
-        )
+        self.status.load(atomic::Ordering::SeqCst).into()
     }
 
     /// Indicates that at least one message has been received successfully
@@ -480,7 +499,7 @@ pub fn handle(
     let connection_handle = ConnectionHandle {
         task,
         received_msg_successfully,
-        status_repr: Arc::new(AtomicBool::new(status.as_repr())),
+        status: Arc::new(AtomicStatus::from(status)),
         internal_message_tx,
     };
     (connection_handle, info_rx)
@@ -491,20 +510,21 @@ pub fn connect(
     ctxt: ConnectionContext,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
     let connection_status = PeerConnectionStatus::Connecting;
-    let status_repr = Arc::new(AtomicBool::new(connection_status.as_repr()));
+    let status = Arc::new(AtomicStatus::from(connection_status));
     let received_msg_successfully = Arc::new(AtomicBool::new(false));
     let (info_tx, info_rx) = mpsc::unbounded();
     let (mailbox_tx, mailbox_rx) = mailbox::new();
     let internal_message_tx = mailbox_tx.internal_message_tx.clone();
     let connection_task = {
         let received_msg_successfully = received_msg_successfully.clone();
-        let status_repr = status_repr.clone();
+        let status = status.clone();
         let info_tx = info_tx.clone();
         move || async move {
             let connection =
-                Connection::from_connecting(connecting, ctxt.network).await?;
-            status_repr.store(
-                PeerConnectionStatus::Connected.as_repr(),
+                Connection::from_connecting(connecting, ctxt.magic_bytes)
+                    .await?;
+            status.store(
+                PeerConnectionStatus::Connected.into(),
                 atomic::Ordering::SeqCst,
             );
 
@@ -530,18 +550,10 @@ pub fn connect(
     let connection_handle = ConnectionHandle {
         task,
         received_msg_successfully,
-        status_repr,
+        status,
         internal_message_tx,
     };
     (connection_handle, info_rx)
-}
-
-// RPC output representation for peer + state
-#[derive(Clone, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
-pub struct Peer {
-    #[schema(value_type = schema::SocketAddr)]
-    pub address: SocketAddr,
-    pub status: PeerConnectionStatus,
 }
 
 #[cfg(test)]

@@ -13,49 +13,39 @@ protox = { workspace = true }
 tonic-prost-build = { workspace = true }
 
 [dependencies]
-anyhow = { workspace = true, features = ["backtrace"] }
 async-lock = { workspace = true }
 bincode = { workspace = true }
-bitcoin = { workspace = true, features = ["serde"] }
-blake3 = { workspace = true }
-borsh = { workspace = true, features = ["derive"] }
-bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }
+bitcoin = { workspace = true }
+borsh = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true, features = ["derive"], optional = true }
-ed25519-dalek = { workspace = true, features = ["batch", "serde"] }
+const-hex = { workspace = true }
+ed25519-dalek = { workspace = true }
 educe = { workspace = true, features = ["Clone", "Debug", "Default"] }
 error-fatality = { workspace = true }
 fallible-iterator = { workspace = true }
 futures = { workspace = true, features = ["alloc"] }
 governor = { workspace = true, features = ["quanta", "std"] }
-halo2_proofs = { workspace = true }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
-hex = { workspace = true, features = ["serde"] }
 incrementalmerkletree = { workspace = true }
 jsonrpsee = { workspace = true }
-nonempty = { workspace = true, features = ["serialize"] }
+nonempty = { workspace = true }
 orchard = { workspace = true }
-parking_lot = { workspace = true, features = ["arc_lock"]}
+parking_lot = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 quinn = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 rcgen = { workspace = true }
-reddsa = { workspace = true, features = ["thiserror"] }
 rustls = { workspace = true, features = ["ring"] }
-rustreexo = { workspace = true, features = ["with-serde"] }
-semver = { workspace = true, features = ["serde"] }
-serde = { workspace = true, features = ["derive", "rc"] }
+semver = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-serde_with = { workspace = true, features = ["alloc", "hex", "macros"] }
-shardtree = { workspace = true }
-smallvec = { workspace = true, features = ["write"] }
 sneed = { workspace = true, features = ["observe"] }
-strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+thunder_orchard_types = { path = "../types", features = ["heed", "shardtree"] }
 tiny-bip39 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -64,15 +54,15 @@ tonic = { workspace = true }
 tonic-prost = { workspace = true }
 tracing = { workspace = true }
 transitive = { workspace = true }
-utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
-zcash_note_encryption = { workspace = true }
 zip32 = { workspace = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
+bytemuck = { workspace = true }
 temp-dir = { workspace = true }
 
 [features]
-clap = ["dep:clap"]
+clap = ["thunder_orchard_types/clap"]
 
 [lints]
 workspace = true

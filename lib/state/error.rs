@@ -12,9 +12,9 @@ use crate::types::{
 #[derive(Debug, Error)]
 #[error(
     "Computed Utxo hash ({}) for input ({}) does not match input hash ({})",
-    hex::encode(.computed),
+    const_hex::encode(.computed),
     .outpoint,
-    hex::encode(.input_hash),
+    const_hex::encode(.input_hash),
 )]
 pub struct UtxoHashMismatch {
     pub(in crate::state) computed: Hash,
@@ -108,7 +108,7 @@ impl From<db::TryGet> for ValidateOrchardAnchor {
 pub enum ValidateTransaction {
     #[error("failed to verify authorizations")]
     #[fatal(forward)]
-    Authorization(#[from] crate::authorization::Error),
+    Authorization(#[from] crate::types::AuthorizationError),
     #[error(transparent)]
     #[fatal(forward)]
     Filled(#[from] ValidateFilledTransaction),
@@ -173,6 +173,16 @@ impl From<db::Error> for Orchard {
     fn from(err: db::Error) -> Self {
         Self::Db(Box::new(err))
     }
+}
+
+#[derive(Debug, Error, Fatality, Split)]
+pub enum RegenerateProof {
+    #[error(transparent)]
+    #[fatal(true)]
+    DbTryGet(#[from] db::TryGet),
+    #[error("failed to generate proof")]
+    #[fatal(false)]
+    Prove(#[source] UtreexoError),
 }
 
 #[allow(clippy::duplicated_attributes)]

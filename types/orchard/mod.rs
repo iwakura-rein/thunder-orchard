@@ -5,7 +5,6 @@ use std::{
     sync::LazyLock,
 };
 
-use anyhow::anyhow;
 use borsh::BorshSerialize;
 use bytemuck::{TransparentWrapper, TransparentWrapperAlloc as _};
 use educe::Educe;
@@ -39,20 +38,21 @@ pub use orchard::{
     value::{BalanceError, NoteValue},
 };
 
-pub use crate::types::address::ShieldedAddress as Address;
+pub use crate::address::ShieldedAddress as Address;
 
+#[cfg(feature = "shardtree")]
 pub mod shardtree_db;
+#[cfg(feature = "shardtree")]
+pub use shardtree_db::{
+    CreateShardTreeDbError, DbTxn as ShardTreeDbTxn, PositionWrapper,
+    ShardTree, ShardTreeDb, ShardTreeError, ShardTreeStore,
+    StoreError as ShardTreeStoreError,
+};
 mod util;
 
 use util::{
     Borrowed, ComposeTryInto, Owned, OwnedVec, Ownership, SerializeBorrow,
     SliceOwnership, With,
-};
-
-pub use shardtree_db::{
-    CreateShardTreeDbError, DbTxn as ShardTreeDbTxn, PositionWrapper,
-    ShardTree, ShardTreeDb, ShardTreeError, ShardTreeStore,
-    StoreError as ShardTreeStoreError,
 };
 
 /// Serde encoding for [`[u8; N]`]
@@ -116,7 +116,7 @@ pub struct Nullifier(
 impl std::fmt::Display for Nullifier {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0.to_bytes()).fmt(f)
+        const_hex::encode(self.0.to_bytes()).fmt(f)
     }
 }
 
@@ -131,18 +131,21 @@ impl<'de> Deserialize<'de> for Nullifier {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error("invalid nullifier bytes ({})", const_hex::encode(.0))]
+        #[repr(transparent)]
+        struct InvalidNullifierBytes([u8; 32]);
+
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
         match orchard::note::Nullifier::from_bytes(&bytes).into_option() {
             Some(nullifier) => Ok(nullifier.into()),
             None => {
-                Err(<D::Error as serde::de::Error>::custom(anyhow::anyhow!(
-                    "Invalid nullifier bytes: {}",
-                    hex::encode(bytes)
-                )))
+                let err = InvalidNullifierBytes(bytes);
+                Err(<D::Error as serde::de::Error>::custom(err))
             }
         }
     }
@@ -155,7 +158,7 @@ impl Serialize for Nullifier {
     {
         let bytes = self.0.to_bytes();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -207,16 +210,16 @@ where
         D: Deserializer<'de>,
     {
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
         match redpallas::VerificationKey::try_from(bytes) {
             Ok(vk) => Ok(Self(vk)),
-            Err(err) => {
-                let err = anyhow::Error::from(err);
-                Err(<D::Error as serde::de::Error>::custom(format!("{err:#}")))
-            }
+            Err(err) => Err(<D::Error as serde::de::Error>::custom(format!(
+                "{:+}",
+                errors::fmt(&err)
+            ))),
         }
     }
 }
@@ -232,7 +235,7 @@ where
     {
         let bytes: [u8; 32] = self.0.borrow().into();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -333,8 +336,16 @@ impl<'de> Deserialize<'de> for ExtractedNoteCommitment {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error(
+            "Failed to parse extracted note commitment from `{}`",
+            const_hex::encode(.0)
+        )]
+        #[repr(transparent)]
+        struct ParseExtractedNoteCommitment([u8; 32]);
+
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
@@ -343,10 +354,7 @@ impl<'de> Deserialize<'de> for ExtractedNoteCommitment {
         {
             Some(cmx) => Ok(Self(cmx)),
             None => {
-                let err = anyhow!(
-                    "Failed to parse extracted note commitment from `{}`",
-                    hex::encode(bytes)
-                );
+                let err = ParseExtractedNoteCommitment(bytes);
                 Err(<D::Error as serde::de::Error>::custom(err))
             }
         }
@@ -360,7 +368,7 @@ impl Serialize for ExtractedNoteCommitment {
     {
         let bytes: [u8; 32] = (&self.0).into();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -549,8 +557,16 @@ impl<'de> Deserialize<'de> for ValueCommitmentRepr<'_, Owned> {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error(
+            "failed to parse value commitment from `{}`",
+            const_hex::encode(.0),
+        )]
+        #[repr(transparent)]
+        struct ParseValueCommitment([u8; 32]);
+
         let bytes: [u8; 32] = if deserializer.is_human_readable() {
-            hex::serde::deserialize(deserializer)?
+            const_hex::serde::deserialize(deserializer)?
         } else {
             <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
@@ -558,10 +574,7 @@ impl<'de> Deserialize<'de> for ValueCommitmentRepr<'_, Owned> {
         {
             Some(cv_net) => Ok(Self(cv_net)),
             None => {
-                let err = anyhow!(
-                    "Failed to parse value commitment from `{}`",
-                    hex::encode(bytes)
-                );
+                let err = ParseValueCommitment(bytes);
                 Err(<D::Error as serde::de::Error>::custom(err))
             }
         }
@@ -578,7 +591,7 @@ where
     {
         let bytes: [u8; 32] = self.0.borrow().to_bytes();
         if serializer.is_human_readable() {
-            hex::serde::serialize(bytes, serializer)
+            const_hex::serde::serialize(bytes, serializer)
         } else {
             <[u8; 32] as Serialize>::serialize(&bytes, serializer)
         }
@@ -996,12 +1009,16 @@ impl<'de> Deserialize<'de> for BundleFlags {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error("unexpected bits set in bundle flags ({0:x})")]
+        #[repr(transparent)]
+        struct UnexpectedBits(u8);
+
         let repr: u8 = u8::deserialize(deserializer)?;
         match orchard::bundle::Flags::from_byte(repr) {
             Some(flags) => Ok(Self(flags)),
             None => {
-                let err =
-                    anyhow!("Unexpected bits set in bundle flags: {repr:x}");
+                let err = UnexpectedBits(repr);
                 Err(<D::Error as serde::de::Error>::custom(err))
             }
         }
@@ -1029,7 +1046,7 @@ impl Anchor {
 
 impl std::fmt::Display for Anchor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0.to_bytes()).fmt(f)
+        const_hex::encode(self.0.to_bytes()).fmt(f)
     }
 }
 
@@ -1047,11 +1064,16 @@ impl<'de> Deserialize<'de> for Anchor {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error("invalid anchor (`{}`)", const_hex::encode(.0))]
+        #[repr(transparent)]
+        struct InvalidAnchor([u8; 32]);
+
         let bytes: [u8; 32] = Deserialize::deserialize(deserializer)?;
         match orchard::tree::Anchor::from_bytes(bytes).into_option() {
             Some(anchor) => Ok(Self(anchor)),
             None => {
-                let err = anyhow!("Invalid anchor (`{}`)", hex::encode(bytes));
+                let err = InvalidAnchor(bytes);
                 Err(<D::Error as serde::de::Error>::custom(err))
             }
         }
@@ -1070,7 +1092,7 @@ impl Serialize for Anchor {
         S: Serializer,
     {
         if serializer.is_human_readable() {
-            hex::serde::serialize(self.0.to_bytes(), serializer)
+            const_hex::serde::serialize(self.0.to_bytes(), serializer)
         } else {
             Serialize::serialize(&self.0.to_bytes(), serializer)
         }
@@ -1261,13 +1283,18 @@ impl<'de> Deserialize<'de> for Rho {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error("invalid rho (`{}`)", const_hex::encode(.0))]
+        #[repr(transparent)]
+        struct InvalidRho([u8; 32]);
+
         let repr = RhoRepr::deserialize(deserializer)?;
         match orchard::note::Rho::from_bytes(&repr.0).into_option() {
             Some(rho) => Ok(Self(rho)),
-            None => Err(<D::Error as serde::de::Error>::custom(anyhow!(
-                "Invalid rho: (`{}`)",
-                hex::encode(repr.0)
-            ))),
+            None => {
+                let err = InvalidRho(repr.0);
+                Err(<D::Error as serde::de::Error>::custom(err))
+            }
         }
     }
 }
@@ -1285,8 +1312,8 @@ impl Serialize for Rho {
 #[derive(Debug, Error)]
 #[error(
     "Invalid rseed (`{}`) for rho (`{}`)",
-    hex::encode(.rho.0.to_bytes()),
-    hex::encode(.rseed),
+    const_hex::encode(.rho.0.to_bytes()),
+    const_hex::encode(.rseed),
 )]
 struct RandomSeedError {
     rho: Rho,
@@ -1360,6 +1387,10 @@ impl<'de> Deserialize<'de> for Note {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Debug, Error)]
+        #[error("invalid note")]
+        struct InvalidNote;
+
         let NoteRepr {
             recipient,
             value,
@@ -1367,7 +1398,8 @@ impl<'de> Deserialize<'de> for Note {
             rseed,
         } = NoteRepr::deserialize(deserializer)?;
         let rseed = RandomSeed::try_from((&rho, rseed)).map_err(|err| {
-            <D::Error as serde::de::Error>::custom(anyhow!(err))
+            let err_msg = format!("{:+}", errors::fmt(&err));
+            <D::Error as serde::de::Error>::custom(err_msg)
         })?;
         let note = orchard::Note::from_parts(
             recipient.0,
@@ -1378,9 +1410,7 @@ impl<'de> Deserialize<'de> for Note {
         .into_option();
         match note {
             Some(rseed) => Ok(Self(rseed)),
-            None => Err(<D::Error as serde::de::Error>::custom(anyhow!(
-                "Invalid note"
-            ))),
+            None => Err(<D::Error as serde::de::Error>::custom(InvalidNote)),
         }
     }
 }
@@ -2166,7 +2196,7 @@ impl Serialize for Frontier {
 #[cfg(test)]
 mod spend_auth_tests {
     use super::*;
-    use crate::{authorization, types::Transaction};
+    use crate::{AuthorizationError, Transaction, authorization};
     use incrementalmerkletree::{Hashable, Level};
     use rustreexo::accumulator::proof::Proof;
 
@@ -2260,7 +2290,7 @@ mod spend_auth_tests {
             .verify_spend_auth_signatures(txid.as_slice())
             .unwrap();
         bundle.verify_proof().unwrap();
-        let authtx = crate::types::AuthorizedTransaction {
+        let authtx = crate::AuthorizedTransaction {
             transaction: tx.clone(),
             authorizations: Vec::new(),
         };
@@ -2345,13 +2375,13 @@ mod spend_auth_tests {
                 .verify_spend_auth_signatures(tampered_tx.txid().as_slice())
                 .is_err()
         );
-        let authtx = crate::types::AuthorizedTransaction {
+        let authtx = crate::AuthorizedTransaction {
             transaction: tampered_tx,
             authorizations: Vec::new(),
         };
         assert!(matches!(
             authorization::verify_authorized_transaction(&authtx),
-            Err(authorization::Error::OrchardSignature(_))
+            Err(AuthorizationError::OrchardSignature(_))
         ));
     }
 }
