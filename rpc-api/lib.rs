@@ -19,7 +19,7 @@ pub mod open_api {
 }
 
 pub mod node {
-    use std::{collections::HashSet, net::SocketAddr};
+    use std::collections::HashSet;
 
     use jsonrpsee::{core::RpcResult, proc_macros::rpc};
     use l2l_openapi::open_api;
@@ -27,8 +27,9 @@ pub mod node {
     use thunder_orchard_types::{
         Block, BlockHash, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
         PointedOutput, SpentOutput, Transaction, TransparentAddress, Txid,
-        WithdrawalBundle, net::Peer, schema as thunder_orchard_schema,
-        transaction,
+        WithdrawalBundle,
+        net::{Peer, PeerAddress},
+        schema as thunder_orchard_schema, transaction,
     };
     use utoipa::ToSchema;
 
@@ -40,24 +41,12 @@ pub mod node {
         /// Connect to a peer
         #[open_api_method(output_schema(ToSchema))]
         #[method(name = "connect_peer")]
-        async fn connect_peer(
-            &self,
-            #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::SocketAddr"
-            ))]
-            addr: SocketAddr,
-        ) -> RpcResult<()>;
+        async fn connect_peer(&self, addr: PeerAddress) -> RpcResult<()>;
 
         /// Delete peer from known_peers DB.
         /// Connections to the peer are not terminated.
         #[method(name = "forget_peer")]
-        async fn forget_peer(
-            &self,
-            #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::SocketAddr"
-            ))]
-            addr: SocketAddr,
-        ) -> RpcResult<()>;
+        async fn forget_peer(&self, addr: PeerAddress) -> RpcResult<()>;
 
         /// Invalidate a block, potentially re-orging to a valid ancestor of
         /// the current tip.

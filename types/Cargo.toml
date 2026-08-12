@@ -32,6 +32,7 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 transitive = { workspace = true, optional = true }
+url = { workspace = true, features = ["serde"] }
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
 zcash_note_encryption = { workspace = true }
 

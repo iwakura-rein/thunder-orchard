@@ -6778,6 +6778,7 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "transitive",
+ "url",
  "zip32",
 ]
 
@@ -6918,6 +6919,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tracing",
  "transitive",
+ "url",
  "utoipa",
  "zcash_note_encryption",
 ]
@@ -7081,6 +7083,7 @@ dependencies = [
  "futures-io",
  "futures-sink",
  "futures-util",
+ "hashbrown 0.15.5",
  "pin-project-lite",
  "tokio",
 ]
@@ -7503,6 +7506,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

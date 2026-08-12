@@ -84,3 +84,11 @@ pub mod withdrawal_bundle {
     pub struct Error(#[from] Inner);
 }
 pub use withdrawal_bundle::Error as WithdrawalBundle;
+
+#[derive(Debug, Error)]
+pub enum ParsePeerAddress {
+    #[error("missing port")]
+    MissingPort,
+    #[error(transparent)]
+    Parse(#[from] url::ParseError),
+}

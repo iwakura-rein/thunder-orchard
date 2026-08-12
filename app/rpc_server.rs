@@ -8,7 +8,9 @@ use jsonrpsee::{
 };
 use thunder_orchard::types::{
     Block, Pointed, PointedOutput, ShieldedAddress, SpentOutput,
-    TransparentAddress, Txid, WithdrawalBundle, net::Peer, wallet::Balance,
+    TransparentAddress, Txid, WithdrawalBundle,
+    net::{Peer, PeerAddress},
+    wallet::Balance,
 };
 use thunder_orchard_app_rpc_api as rpc_api;
 use tower_http::{
@@ -76,11 +78,17 @@ impl rpc_api::open_api::RpcServer for RpcServerImpl<true> {
 
 #[async_trait]
 impl rpc_api::node::PrivateRpcServer for RpcServerImpl<true> {
-    async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
-        self.app.node.connect_peer(addr).map_err(custom_err)
+    async fn connect_peer(&self, addr: PeerAddress) -> RpcResult<()> {
+        let resolved_addr = thunder_orchard::net::resolve_peer_address(addr)
+            .await
+            .map_err(custom_err)?;
+        self.app
+            .node
+            .connect_peer(resolved_addr)
+            .map_err(custom_err)
     }
 
-    async fn forget_peer(&self, addr: SocketAddr) -> RpcResult<()> {
+    async fn forget_peer(&self, addr: PeerAddress) -> RpcResult<()> {
         match self.app.node.forget_peer(&addr) {
             Ok(_) => Ok(()),
             Err(err) => Err(custom_err(err)),
