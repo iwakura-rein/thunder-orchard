@@ -49,7 +49,7 @@ jobs:
           shared-key: release-x86_64-unknown-linux-gnu
 
       - name: Rustfmt
-        run: cargo fmt --all -- --check
+        run: cargo fmt -- --check
       
       - name: Cargo check
         run: cargo check --release --all-targets --all-features
