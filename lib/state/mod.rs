@@ -1,3 +1,5 @@
+//! Sidechain state as of the current sidechain tip
+
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},

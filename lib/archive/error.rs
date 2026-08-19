@@ -4,17 +4,23 @@ use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
 use thiserror::Error;
 use transitive::Transitive;
 
-use crate::types::{BlockHash, Version};
+use crate::{
+    archive::side_tips::error as side_tips,
+    types::{BlockHash, Version},
+};
 
 #[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(
     from(db::Delete, db::Error),
     from(db::Get, db::Error),
+    from(db::Last, db::Error),
     from(db::Put, db::Error),
     from(db::TryGet, db::Error),
     from(env::CreateDb, env::Error),
-    from(env::WriteTxn, env::Error)
+    from(env::WriteTxn, env::Error),
+    from(side_tips::DisconnectMainchainTip, side_tips::Error),
+    from(side_tips::DisconnectSidechainTip, side_tips::Error)
 )]
 pub enum Error {
     #[error(transparent)]
@@ -62,4 +68,6 @@ pub enum Error {
     NoMainHeaderInfo(bitcoin::BlockHash),
     #[error("no height info for mainchain block hash {0}")]
     NoMainHeight(bitcoin::BlockHash),
+    #[error(transparent)]
+    SideTips(#[from] side_tips::Error),
 }
