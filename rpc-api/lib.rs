@@ -25,21 +25,20 @@ pub mod node {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
-        Block, BlockHash, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
-        PointedOutput, SpentOutput, Transaction, TransparentAddress, Txid,
-        WithdrawalBundle,
-        net::{Peer, PeerAddress},
+        Authorization, Block, BlockHash, Body, Header, InPoint, M6id,
+        MerkleRoot, OutPoint, Output, OutputContent, Pointed, PointedOutput,
+        SpentOutput, Transaction, TransparentAddress, Txid, WithdrawalBundle,
+        net::{Peer, PeerAddress, PeerConnectionStatus},
         schema as thunder_orchard_schema, transaction,
     };
     use utoipa::ToSchema;
 
     use crate::{open_api, schema};
 
-    #[open_api(ref_schemas[Txid])]
+    #[open_api]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
     pub trait PrivateRpc {
         /// Connect to a peer
-        #[open_api_method(output_schema(ToSchema))]
         #[method(name = "connect_peer")]
         async fn connect_peer(&self, addr: PeerAddress) -> RpcResult<()>;
 
@@ -57,7 +56,6 @@ pub mod node {
         ) -> RpcResult<()>;
 
         /// Remove a tx from the mempool
-        #[open_api_method(output_schema(ToSchema))]
         #[method(name = "remove_from_mempool")]
         async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()>;
 
@@ -74,9 +72,13 @@ pub mod node {
     }
 
     #[open_api(ref_schemas[
-        MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
-        schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
-        thunder_orchard_schema::BitcoinOutPoint,
+        Authorization, BlockHash, Body, Header, InPoint, M6id,
+        MerkleRoot, OutPoint, Output, OutputContent, PeerConnectionStatus,
+        SpentOutput, Transaction, TransparentAddress, Txid,
+        schema::BitcoinAddr, schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+        schema::BitcoinTransaction,
+        schema::BitcoinOutPoint, schema::BitcoinTransaction,
+        schema::SocketAddr, schema::UtreexoNodeHash, schema::UtreexoProof,
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
     pub trait Rpc {
@@ -89,14 +91,14 @@ pub mod node {
             &self,
             block: Block,
             #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::BitcoinBlockHash"
+                PartialSchema = "schema::BitcoinBlockHash"
             ))]
             main_block_hash: bitcoin::BlockHash,
         ) -> RpcResult<bool>;
 
         /// Get the best mainchain block hash known by Thunder-Orchard
         #[open_api_method(output_schema(
-            PartialSchema = "schema::Optional<thunder_orchard_schema::BitcoinBlockHash>"
+            PartialSchema = "schema::Optional<schema::BitcoinBlockHash>"
         ))]
         #[method(name = "get_best_mainchain_block_hash")]
         async fn get_best_mainchain_block_hash(
@@ -193,9 +195,9 @@ pub mod wallet {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
-        Block, BlockHash, MerkleRoot, OutPoint, Output, OutputContent,
-        PointedOutput, ShieldedAddress, SpentOutput, Transaction,
-        TransparentAddress, Txid, schema as thunder_orchard_schema,
+        Authorization, Block, BlockHash, Body, Header, InPoint, M6id,
+        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
         transaction, wallet::Balance,
     };
     use utoipa::ToSchema;
@@ -214,9 +216,11 @@ pub mod wallet {
     }
 
     #[open_api(ref_schemas[
-        MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
-        schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
-        thunder_orchard_schema::BitcoinOutPoint,
+        Authorization, Block, BlockHash, Body, Header, InPoint, M6id,
+        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        Transaction, TransparentAddress, Txid, schema::BitcoinAddr,
+        schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+        schema::UtreexoNodeHash, schema::UtreexoProof,
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
     pub trait Rpc {
@@ -278,7 +282,7 @@ pub mod wallet {
         async fn create_withdrawal(
             &self,
             #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::BitcoinAddr"
+                PartialSchema = "schema::BitcoinAddr"
             ))]
             mainchain_address: bitcoin::Address<
                 bitcoin::address::NetworkUnchecked,
@@ -374,3 +378,6 @@ pub mod wallet {
         ) -> RpcResult<transaction::Authorized<Transaction>>;
     }
 }
+
+#[cfg(test)]
+mod test;
