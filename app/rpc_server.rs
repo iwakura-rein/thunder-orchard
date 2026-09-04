@@ -185,6 +185,13 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
         Ok(Some(block))
     }
 
+    async fn get_block_hash(
+        &self,
+        height: u32,
+    ) -> RpcResult<Option<thunder_orchard::types::BlockHash>> {
+        self.app.node.try_get_block_hash(height).map_err(custom_err)
+    }
+
     async fn get_bmm_inclusions(
         &self,
         block_hash: thunder_orchard::types::BlockHash,
