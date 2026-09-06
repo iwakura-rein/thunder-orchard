@@ -738,6 +738,15 @@ where
         });
         Txid(hash)
     }
+
+    /// Canonical encoding as bytes. The canonical encoding is used for hashing,
+    /// but other encodings may be used at eg. networking, rpc levels.
+    pub fn canonical_bytes(&self) -> borsh::io::Result<Vec<u8>>
+    where
+        Self: BorshSerialize,
+    {
+        borsh::to_vec(&self)
+    }
 }
 
 impl<S> Transaction<orchard::InProgress<orchard::Unproven, S>>

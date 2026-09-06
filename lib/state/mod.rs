@@ -2,12 +2,11 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
 };
 
 use fallible_iterator::FallibleIterator as _;
 use heed::types::SerdeBincode;
-use serde::{Deserialize, Serialize};
 use sneed::{
     DatabaseUnique, RoTxn, RwTxn, UnitKey,
     db::error::{self as db_error, Error as DbError},
@@ -23,6 +22,7 @@ use crate::{
         SpentOutput, Transaction, TransparentAddress, UtreexoNodeHash,
         UtreexoProof, VERSION, Version, WithdrawalBundle,
         WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        state::WithdrawalBundleInfo,
     },
     util::Watchable,
 };
@@ -49,20 +49,6 @@ pub struct PrevalidatedBlock {
     pub coinbase_value: bitcoin::Amount,
     pub next_height: u32, // Precomputed next height to avoid DB read in write txn
     pub accumulator_diff: types::AccumulatorDiff,
-}
-
-/// Information we have regarding a withdrawal bundle
-#[derive(Debug, Deserialize, Serialize)]
-enum WithdrawalBundleInfo {
-    /// Withdrawal bundle is known
-    Known(WithdrawalBundle),
-    /// Withdrawal bundle is unknown but unconfirmed / failed
-    Unknown,
-    /// If an unknown withdrawal bundle is confirmed, ALL UTXOs are
-    /// considered spent.
-    UnknownConfirmed {
-        spend_utxos: BTreeMap<OutPoint, Output>,
-    },
 }
 
 #[derive(Clone)]
@@ -255,6 +241,22 @@ impl State {
                 panic!("missing failure status for {latest_failed_m6id}")
             });
         Ok(Some((failed_height, latest_failed_m6id)))
+    }
+
+    pub fn try_get_withdrawal_bundle(
+        &self,
+        rotxn: &RoTxn,
+        m6id: &M6id,
+    ) -> Result<
+        Option<(WithdrawalBundleInfo, WithdrawalBundleStatus)>,
+        db_error::TryGet,
+    > {
+        let Some((bundle_info, bundle_status)) =
+            self.withdrawal_bundles.try_get(rotxn, m6id)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some((bundle_info, bundle_status.latest().value)))
     }
 
     /// Get the current Utreexo accumulator

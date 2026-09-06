@@ -11,6 +11,9 @@ use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::Stream;
 use heed::EnvFlags;
 use sneed::{DbError, Env, EnvError, RoTxn, RwTxnError};
+use thunder_orchard_types::{
+    M6id, WithdrawalBundleStatus, state::WithdrawalBundleInfo,
+};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
@@ -584,6 +587,19 @@ where
         } else {
             Ok(None)
         }
+    }
+
+    pub fn try_get_withdrawal_bundle(
+        &self,
+        m6id: &M6id,
+    ) -> Result<Option<(WithdrawalBundleInfo, WithdrawalBundleStatus)>, Error>
+    {
+        let rotxn = self.env.read_txn()?;
+        let res = self
+            .state
+            .try_get_withdrawal_bundle(&rotxn, m6id)
+            .map_err(state::Error::from)?;
+        Ok(res)
     }
 
     pub fn try_get_pending_withdrawal_bundle(

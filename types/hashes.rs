@@ -228,7 +228,7 @@ impl std::fmt::Display for M6id {
     }
 }
 
-impl borsh::BorshSerialize for M6id {
+impl BorshSerialize for M6id {
     fn serialize<W: borsh::io::Write>(
         &self,
         writer: &mut W,
@@ -238,13 +238,20 @@ impl borsh::BorshSerialize for M6id {
     }
 }
 
-impl borsh::BorshDeserialize for M6id {
+impl BorshDeserialize for M6id {
     fn deserialize_reader<R: borsh::io::Read>(
         reader: &mut R,
     ) -> borsh::io::Result<Self> {
         let bytes: [u8; 32] =
             borsh::BorshDeserialize::deserialize_reader(reader)?;
         Ok(Self(bitcoin::Txid::from_byte_array(bytes)))
+    }
+}
+impl FromStr for M6id {
+    type Err = <bitcoin::Txid as FromStr>::Err;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let inner = bitcoin::Txid::from_str(s)?;
+        Ok(Self(inner))
     }
 }
 
