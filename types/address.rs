@@ -17,7 +17,16 @@ use crate::{
 };
 
 #[derive(
-    BorshDeserialize, BorshSerialize, Clone, Copy, Eq, Hash, PartialEq, ToSchema,
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    ToSchema,
 )]
 #[schema(value_type = String)]
 pub struct TransparentAddress(pub [u8; 20]);

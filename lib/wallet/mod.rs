@@ -104,6 +104,8 @@ pub enum Error {
     NoSeed,
     #[error("not enough funds")]
     NotEnoughFunds,
+    #[error("no transfer destination")]
+    NoTransferDestination,
     #[error("utxo does not exist")]
     NoUtxo,
     #[error("Orchard balance error")]
@@ -746,13 +748,36 @@ impl Wallet {
         })
     }
 
-    pub fn create_transaction(
+    pub fn create_transparent_transaction(
         &self,
         accumulator: &Accumulator,
         address: TransparentAddress,
         value: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<Transaction, Error> {
+        self.create_transparent_transaction_many(
+            accumulator,
+            &BTreeMap::from([(address, value)]),
+            fee,
+        )
+    }
+
+    /// Pay each address in `dests`, and pay the change to a new address
+    pub fn create_transparent_transaction_many(
+        &self,
+        accumulator: &Accumulator,
+        dests: &BTreeMap<TransparentAddress, bitcoin::Amount>,
+        fee: bitcoin::Amount,
+    ) -> Result<Transaction, Error> {
+        if dests.is_empty() {
+            return Err(Error::NoTransferDestination);
+        }
+        let value = dests
+            .values()
+            .try_fold(bitcoin::Amount::ZERO, |total, value| {
+                total.checked_add(*value)
+            })
+            .ok_or(AmountOverflowError)?;
         let mut rwtxn = self.env.write_txn()?;
         let (total, coins) = self.select_transparent_coins(
             &rwtxn,
@@ -771,22 +796,23 @@ impl Wallet {
         let input_utxo_hashes: Vec<UtreexoNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator.prove(&input_utxo_hashes)?;
-        let outputs = vec![
-            Output {
-                address,
-                content: OutputContent::Value(value),
-            },
-            Output {
-                address: self.get_new_transparent_address(&mut rwtxn)?,
-                content: OutputContent::Value(change),
-            },
-        ];
+        let mut outputs: Vec<Output> = dests
+            .iter()
+            .map(|(address, value)| Output {
+                address: *address,
+                content: OutputContent::Value(*value),
+            })
+            .collect();
+        outputs.push(Output {
+            address: self.get_new_transparent_address(&mut rwtxn)?,
+            content: OutputContent::Value(change),
+        });
         rwtxn.commit()?;
         Ok(Transaction {
             inputs: inputs.into(),
             proof,
-            outputs: outputs.into(),
             orchard_bundle: None,
+            outputs: outputs.into(),
         })
     }
 

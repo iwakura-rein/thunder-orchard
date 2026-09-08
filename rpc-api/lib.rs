@@ -417,7 +417,7 @@ pub mod wallet {
         PointedOutput, ShieldedAddress, SpentOutput, Transaction,
         TransparentAddress, Txid,
         transaction::{self, Outputs},
-        wallet::Balance,
+        wallet::{Balance, TransparentTransferDests},
     };
     use utoipa::ToSchema;
 
@@ -484,6 +484,15 @@ pub mod wallet {
             &self,
             dest: TransparentAddress,
             value_sats: u64,
+            fee_sats: u64,
+        ) -> RpcResult<Txid>;
+
+        /// Create a tx that transfers funds to each transparent address in
+        /// `dests`, which maps a transparent address to a value in sats.
+        #[method(name = "create_transparent_transfer_many")]
+        async fn create_transparent_transfer_many(
+            &self,
+            dests: TransparentTransferDests,
             fee_sats: u64,
         ) -> RpcResult<Txid>;
 
