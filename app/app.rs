@@ -1,7 +1,14 @@
-use std::{borrow::BorrowMut, collections::HashMap, sync::Arc};
+use std::{
+    borrow::BorrowMut,
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
+use thiserror::Error;
 use thunder_orchard::{
     miner::{self, Miner},
     node::{self, Node},
@@ -24,11 +31,10 @@ use tonic_health::{
     ServingStatus,
     pb::{HealthCheckRequest, health_client::HealthClient},
 };
-
-use crate::cli::Config;
+use transitive::Transitive;
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[derive(Debug, Error, Transitive)]
 #[transitive(
     from(thunder_orchard::archive::Error, node::Error),
     from(thunder_orchard::state::Error, node::Error)
@@ -169,6 +175,19 @@ pub struct BlockTemplate {
     pub fees: bitcoin::Amount,
 }
 
+#[derive(Debug)]
+pub struct Config {
+    pub add_peers: HashSet<thunder_orchard::types::net::PeerAddress>,
+    pub datadir: PathBuf,
+    pub mainchain_grpc_url: url::Url,
+    pub mnemonic_seed_phrase_path: Option<PathBuf>,
+    pub net_addr: SocketAddr,
+    pub network: thunder_orchard::types::Network,
+    pub network_magic_override:
+        Option<thunder_orchard::net::peer_message::MagicBytes>,
+    pub server_names: HashSet<String>,
+}
+
 #[derive(Clone)]
 pub struct App {
     pub node: Arc<Node>,
@@ -271,7 +290,7 @@ impl App {
         Ok(res)
     }
 
-    pub fn new(config: &Config) -> Result<Self, Error> {
+    pub fn new(config: Config) -> Result<Self, Error> {
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -332,11 +351,12 @@ impl App {
         tracing::debug!("Instantiating node struct");
         let node = Node::new(
             thunder_orchard::node::Config {
-                datadir: &config.datadir,
+                add_peers: config.add_peers,
                 bind_addr: config.net_addr,
+                datadir: config.datadir,
                 magic_bytes_override: config.network_magic_override,
-                peers: &config.peers,
                 network: config.network,
+                server_names: config.server_names,
             },
             cusf_mainchain,
             cusf_mainchain_wallet,
