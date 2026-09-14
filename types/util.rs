@@ -3,9 +3,8 @@
 /// Borsh encoding and decoding
 pub(crate) mod borsh {
     pub mod deserialize {
-        use borsh::BorshDeserialize;
-
         use bitcoin::hashes::Hash as _;
+        use borsh::BorshDeserialize;
 
         pub fn bitcoin_outpoint<R>(
             reader: &mut R,
@@ -31,6 +30,31 @@ pub(crate) mod borsh {
             UtreexoNodeHash,
             authorization::{Signature, VerifyingKey},
         };
+
+        pub fn bitcoin_address<V, W>(
+            bitcoin_address: &bitcoin::Address<V>,
+            writer: &mut W,
+        ) -> borsh::io::Result<()>
+        where
+            V: bitcoin::address::NetworkValidation,
+            W: borsh::io::Write,
+        {
+            let spk = bitcoin_address
+                .as_unchecked()
+                .assume_checked_ref()
+                .script_pubkey();
+            BorshSerialize::serialize(spk.as_bytes(), writer)
+        }
+
+        pub fn bitcoin_amount<W>(
+            bitcoin_amount: &bitcoin::Amount,
+            writer: &mut W,
+        ) -> borsh::io::Result<()>
+        where
+            W: borsh::io::Write,
+        {
+            BorshSerialize::serialize(&bitcoin_amount.to_sat(), writer)
+        }
 
         pub fn bitcoin_block_hash<W>(
             block_hash: &bitcoin::BlockHash,

@@ -29,7 +29,7 @@ pub mod node {
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
         Authorization, Block, BlockHash, Body, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, Output, OutputContent, Pointed, PointedOutput,
+        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
         SpentOutput, Transaction, TransparentAddress, Txid, WithdrawalBundle,
         WithdrawalBundleStatus,
         net::{Peer, PeerAddress, PeerConnectionStatus},
@@ -343,7 +343,7 @@ pub mod node {
         async fn get_stxos(
             &self,
             addresses: HashSet<TransparentAddress>,
-        ) -> RpcResult<Vec<Pointed<SpentOutput>>>;
+        ) -> RpcResult<Vec<PointedOutput<SpentOutput>>>;
 
         /// Get transaction by txid
         #[method(name = "get_transaction")]
