@@ -1152,8 +1152,8 @@ mod test {
             },
         },
         types::{
-            AccumulatorDiff, InPoint, M6id, OutPoint, OutPointKey, Output,
-            OutputContent, TransparentAddress, Txid, WithdrawalBundle,
+            AccumulatorDiff, Coinbase, InPoint, M6id, OutPoint, OutPointKey,
+            Output, OutputContent, TransparentAddress, Txid, WithdrawalBundle,
             WithdrawalBundleEvent, WithdrawalBundleEventStatus,
             WithdrawalBundleStatus,
             proto::mainchain::{BlockEvent, BlockInfo, Deposit, TwoWayPegData},
@@ -1393,7 +1393,7 @@ mod test {
 
         let (_temp_dir, env, state) = fresh_state("deposit_reorg_round_trips")?;
         let empty_body = Body {
-            coinbase: Vec::new(),
+            coinbase: Coinbase::default(),
             transactions: Vec::new(),
             authorizations: Vec::new(),
         };

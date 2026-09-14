@@ -16,6 +16,7 @@ halo2_proofs = { workspace = true }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true, optional = true }
 incrementalmerkletree = { workspace = true }
+merkle-cbt = { workspace = true }
 nonempty = { workspace = true, features = ["serialize"] }
 orchard = { workspace = true }
 parking_lot = { workspace = true, optional = true }

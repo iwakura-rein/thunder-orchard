@@ -13,7 +13,7 @@ use thunder_orchard::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, InPoint, OutPoint, Transaction, TransparentAddress,
+        self, Coinbase, InPoint, OutPoint, Transaction, TransparentAddress,
         proto::mainchain::{
             self,
             generated::{
@@ -586,21 +586,27 @@ impl App {
             const NUM_TRANSACTIONS: usize = 1000;
             let (txs, tx_fees) =
                 self.node.get_transactions(NUM_TRANSACTIONS)?;
-            let coinbase = match tx_fees {
-                bitcoin::Amount::ZERO => Vec::new(),
-                tx_fees => {
-                    let address = (|| {
-                        let mut rwtxn = self.wallet.env().write_txn()?;
-                        let res = self
-                            .wallet
-                            .get_new_transparent_address(&mut rwtxn)?;
-                        rwtxn.commit()?;
-                        Ok::<_, thunder_orchard::wallet::Error>(res)
-                    })()?;
-                    vec![types::Output {
-                        address,
-                        content: types::OutputContent::Value(tx_fees),
-                    }]
+            let coinbase = {
+                let outputs = match tx_fees {
+                    bitcoin::Amount::ZERO => Vec::new(),
+                    tx_fees => {
+                        let address = (|| {
+                            let mut rwtxn = self.wallet.env().write_txn()?;
+                            let res = self
+                                .wallet
+                                .get_new_transparent_address(&mut rwtxn)?;
+                            rwtxn.commit()?;
+                            Ok::<_, thunder_orchard::wallet::Error>(res)
+                        })()?;
+                        vec![types::Output {
+                            address,
+                            content: types::OutputContent::Value(tx_fees),
+                        }]
+                    }
+                };
+                Coinbase {
+                    memo: Vec::new(),
+                    outputs: outputs.into(),
                 }
             };
             let body = types::Body::new(txs, coinbase);
@@ -640,7 +646,7 @@ impl App {
             });
             (bribe, header, body, tx_fees)
         } else {
-            let coinbase = Vec::new();
+            let coinbase = Coinbase::default();
             let body = types::Body::new(Vec::new(), coinbase);
             let roots = {
                 let accumulator = {

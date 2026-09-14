@@ -1664,8 +1664,10 @@ impl Archive {
 mod tests {
     use bitcoin::hashes::Hash as _;
 
-    use super::*;
-    use crate::types::{Body, orchard as o};
+    use crate::{
+        archive::Archive,
+        types::{BlockHash, Body, Coinbase, Header, orchard as o},
+    };
 
     struct TempDir(std::path::PathBuf);
 
@@ -1704,7 +1706,7 @@ mod tests {
     }
 
     fn empty_header(prev_side_hash: Option<BlockHash>) -> Header {
-        let body = Body::new(Vec::new(), Vec::new());
+        let body = Body::new(Vec::new(), Coinbase::default());
         Header {
             merkle_root: body.compute_merkle_root(),
             prev_side_hash,

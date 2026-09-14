@@ -693,9 +693,9 @@ impl Wallet {
         ];
         rwtxn.commit()?;
         Ok(Transaction {
-            inputs,
+            inputs: inputs.into(),
             proof,
-            outputs,
+            outputs: outputs.into(),
             orchard_bundle: None,
         })
     }
@@ -737,9 +737,9 @@ impl Wallet {
         ];
         rwtxn.commit()?;
         Ok(Transaction {
-            inputs,
+            inputs: inputs.into(),
             proof,
-            outputs,
+            outputs: outputs.into(),
             orchard_bundle: None,
         })
     }
@@ -795,9 +795,9 @@ impl Wallet {
             Some(bundle)
         };
         let transaction = Transaction {
-            inputs: Vec::new(),
+            inputs: Vec::new().into(),
             proof: utreexo_proof,
-            outputs: Vec::new(),
+            outputs: Vec::new().into(),
             orchard_bundle,
         };
         rwtxn.commit()?;
@@ -922,9 +922,9 @@ impl Wallet {
             Some(bundle)
         };
         let transaction = Transaction {
-            inputs,
+            inputs: inputs.into(),
             proof: utreexo_proof,
-            outputs,
+            outputs: outputs.into(),
             orchard_bundle,
         };
         rwtxn.commit()?;
@@ -1003,9 +1003,9 @@ impl Wallet {
             Some(bundle)
         };
         let transaction = Transaction {
-            inputs,
+            inputs: inputs.into(),
             proof: utreexo_proof,
-            outputs,
+            outputs: outputs.into(),
             orchard_bundle,
         };
         rwtxn.commit()?;

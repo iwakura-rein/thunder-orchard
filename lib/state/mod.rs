@@ -774,11 +774,12 @@ mod test {
         });
         let tx = FilledTransaction {
             transaction: Transaction {
-                inputs: vec![(outpoint, utxo_hash)],
+                inputs: vec![(outpoint, utxo_hash)].into(),
                 outputs: vec![value_output(
                     TransparentAddress::ALL_ZEROS,
                     1300,
-                )],
+                )]
+                .into(),
                 ..Default::default()
             },
             spent_utxos: vec![withdrawal],

@@ -53,7 +53,7 @@ pub fn validate(
         };
         return Err(Error::InvalidBody(err));
     }
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
@@ -206,7 +206,7 @@ pub fn prevalidate(
         };
         return Err(Error::InvalidBody(err));
     }
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
@@ -357,7 +357,7 @@ pub fn connect_prevalidated(
     let mut utxo_puts: Vec<(OutPointKey, Output)> = Vec::new();
 
     // Collect coinbase UTXOs
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root,
             vout: vout as u32,
@@ -555,7 +555,7 @@ pub fn connect(
         .frontier()
         .get(rwtxn, &())
         .map_err(error::Orchard::from)?;
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root,
             vout: vout as u32,
@@ -701,6 +701,7 @@ pub fn disconnect_tip(
     })?;
     // delete coinbase UTXOs, last-to-first
     body.coinbase
+        .outputs
         .iter()
         .enumerate()
         .rev()
@@ -751,18 +752,20 @@ pub fn disconnect_tip(
 mod test {
     use std::borrow::Cow;
 
-    use crate::state::test::{fresh_state, value_output};
+    use bitcoin::hashes::Hash as _;
+
+    use crate::{
+        state::test::{fresh_state, value_output},
+        types::{
+            Accumulator, AccumulatorDiff, Body, Coinbase, Header, OutPoint,
+            OutPointKey, PointedOutput, Transaction, UtreexoNodeHash,
+            authorization::{SigningKey, authorize, get_address},
+            hash,
+        },
+    };
 
     #[test]
     fn validation_rejects_outpoint_utxo_hash_mismatch() -> anyhow::Result<()> {
-        use bitcoin::hashes::Hash as _;
-
-        use crate::types::{
-            Accumulator, AccumulatorDiff, Body, Header, OutPoint, OutPointKey,
-            PointedOutput, Transaction, UtreexoNodeHash,
-            authorization::{SigningKey, authorize, get_address},
-            hash,
-        };
         let (_temp_dir, env, state) =
             fresh_state("validation_rejects_outpoint_utxo_hash_mismatch")?;
 
@@ -835,16 +838,16 @@ mod test {
         let proof_for_b = pre_accumulator.prove(&[leaf_b])?;
         let output_c = value_output(attacker_addr, 9_000);
         let tx = Transaction {
-            inputs: vec![(outpoint_a, hash_b)],
+            inputs: vec![(outpoint_a, hash_b)].into(),
             proof: proof_for_b,
-            outputs: vec![output_c.clone()],
+            outputs: vec![output_c.clone()].into(),
             orchard_bundle: None,
         };
         // Sign with A's key (the spender of outpoint A authorizes the tx).
         let authorized = authorize(&[(attacker_addr, &attacker)], tx)?;
 
         // Assemble body.
-        let body = Body::new(vec![authorized], Vec::new());
+        let body = Body::new(vec![authorized], Coinbase::default());
 
         // Compute the header the validator expects:
         //   merkle_root from the filled tx, roots = post-block accumulator

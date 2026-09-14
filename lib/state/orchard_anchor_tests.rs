@@ -22,9 +22,10 @@ use crate::{
         test::fresh_state,
     },
     types::{
-        AccumulatorDiff, AuthorizedTransaction, Body, Header, OutPoint, Output,
-        OutputContent, PointedOutput, Transaction, TransparentAddress,
-        UtreexoNodeHash, UtreexoProof, authorization, orchard as o,
+        AccumulatorDiff, AuthorizedTransaction, Body, Coinbase, Header,
+        OutPoint, Output, OutputContent, PointedOutput, Transaction,
+        TransparentAddress, UtreexoNodeHash, UtreexoProof, authorization,
+        orchard as o,
     },
 };
 
@@ -138,9 +139,10 @@ fn build_attack_tx(
     let outputs = vec![Output {
         address: attacker_addr,
         content: OutputContent::Value(bitcoin::Amount::from_sat(FORGED_SATS)),
-    }];
+    }]
+    .into();
     let tx = Transaction {
-        inputs: Vec::new(),
+        inputs: Vec::new().into(),
         proof: empty_utreexo_proof,
         outputs,
         orchard_bundle: Some(bundle),
@@ -165,7 +167,7 @@ fn expected_roots(
     let mut acc = state.get_accumulator(rotxn).unwrap();
     let mut diff = AccumulatorDiff::default();
     let merkle_root = body.compute_merkle_root();
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root,
             vout: vout as u32,
@@ -230,7 +232,7 @@ fn forged_anchor_rejected_in_block() -> anyhow::Result<()> {
 
     // Block-validation path must reject the same transaction. Before the fix,
     // `validate_block` accepted it and minted FORGED_SATS out of nothing.
-    let body = Body::new(vec![auth_tx], Vec::new());
+    let body = Body::new(vec![auth_tx], Coinbase::default());
     let header = {
         let rotxn = env.read_txn().unwrap();
         Header {

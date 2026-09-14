@@ -1,7 +1,7 @@
 use error_fatality::{Fatality, Split};
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("Bitcoin amount overflow")]
 pub struct AmountOverflow;
 

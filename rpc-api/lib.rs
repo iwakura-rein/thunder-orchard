@@ -81,14 +81,14 @@ pub mod node {
     pub mod get_block {
         use jsonrpsee::{core::RpcResult, proc_macros::rpc};
         use serde::{Deserialize, Serialize, de::DeserializeOwned};
-        use thunder_orchard_types::{Authorization, Header, Output};
+        use thunder_orchard_types::{Authorization, Coinbase, Header};
         use utoipa::ToSchema;
 
         use crate::node::TransactionVerbose;
 
         #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
         pub struct BodyVerbose {
-            pub coinbase: Vec<Output>,
+            pub coinbase: Coinbase,
             pub transactions: Vec<TransactionVerbose>,
             pub authorizations: Vec<Authorization>,
         }
@@ -157,8 +157,9 @@ pub mod node {
             use l2l_openapi::open_api;
             use serde::Serialize;
             use thunder_orchard_types::{
-                Authorization, Block, BlockHash, Body, Header, MerkleRoot,
-                Output, OutputContent, Transaction, TransparentAddress, Txid,
+                Authorization, Block, BlockHash, Body, Coinbase, Header,
+                MerkleRoot, Output, OutputContent, Transaction,
+                TransparentAddress, Txid, transaction::Outputs,
             };
             use typewit::const_marker::Bool;
             use utoipa::ToSchema;
@@ -193,11 +194,11 @@ pub mod node {
             /// manually
             #[open_api(ref_schemas[
                 Authorization, Block, BlockHash, BlockVerbose, Body,
-                BodyVerbose, Header, MerkleRoot, Output, OutputContent,
-                Transaction, TransactionVerbose, TransparentAddress, Txid,
-                schema::BitcoinAddr, schema::BitcoinBlockHash,
-                schema::BitcoinOutPoint, schema::UtreexoNodeHash,
-                schema::UtreexoProof,
+                BodyVerbose, Coinbase, Header, MerkleRoot, Output,
+                OutputContent, Outputs, Transaction, TransactionVerbose,
+                TransparentAddress, Txid, schema::BitcoinAddr,
+                schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+                schema::UtreexoNodeHash, schema::UtreexoProof,
             ])]
             #[rpc(server, server_bounds(Self: private::Sealed))]
             pub trait Rpc {
@@ -409,10 +410,11 @@ pub mod wallet {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
-        Authorization, Block, BlockHash, Body, Header, InPoint, M6id,
+        Authorization, Block, BlockHash, Body, Coinbase, Header, InPoint, M6id,
         MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
         ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
-        transaction, wallet::Balance,
+        transaction::{self, Outputs},
+        wallet::Balance,
     };
     use utoipa::ToSchema;
 
@@ -430,8 +432,8 @@ pub mod wallet {
     }
 
     #[open_api(ref_schemas[
-        Authorization, Block, BlockHash, Body, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        Authorization, Block, BlockHash, Body, Coinbase, Header, InPoint, M6id,
+        MerkleRoot, OutPoint, Output, OutputContent, Outputs, PointedOutput,
         Transaction, TransparentAddress, Txid, schema::BitcoinAddr,
         schema::BitcoinBlockHash, schema::BitcoinOutPoint,
         schema::UtreexoNodeHash, schema::UtreexoProof,

@@ -1900,6 +1900,37 @@ where
 
 pub type UnauthorizedBundle = Bundle<InProgress<Unproven, Unauthorized>>;
 
+/// Wrapper for borsh encoding without auth
+#[derive(Educe, TransparentWrapper)]
+#[educe(Clone, Debug)]
+#[repr(transparent)]
+pub struct BorshSerializeWithoutAuth<Auth: BundleAuthorization>(
+    pub Bundle<Auth>,
+);
+
+impl<Auth> BorshSerializeWithoutAuth<Auth>
+where
+    Auth: BundleAuthorization,
+{
+    #[inline(always)]
+    pub fn wrap_ref(bundle: &Bundle<Auth>) -> &Self {
+        <Self as TransparentWrapper<_>>::wrap_ref(bundle)
+    }
+}
+
+impl<Auth> BorshSerialize for BorshSerializeWithoutAuth<Auth>
+where
+    Auth: BundleAuthorization,
+{
+    #[inline(always)]
+    fn serialize<W>(&self, writer: &mut W) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        self.0.borsh_serialize_without_auth(writer)
+    }
+}
+
 /// Builder for [`Bundle`]
 #[derive(Debug, TransparentWrapper)]
 #[repr(transparent)]
@@ -2272,9 +2303,9 @@ mod spend_auth_tests {
             .unwrap();
         let proven = unauth.create_proof(rand::rngs::OsRng).unwrap();
         let tx = Transaction {
-            inputs: Vec::new(),
+            inputs: Vec::new().into(),
             proof: Proof::default(),
-            outputs: Vec::new(),
+            outputs: Vec::new().into(),
             orchard_bundle: Some(proven),
         };
         authorization::sign_orchard(&[ask], tx).unwrap()
@@ -2354,9 +2385,9 @@ mod spend_auth_tests {
         );
 
         let tampered_tx = Transaction {
-            inputs: Vec::new(),
+            inputs: Vec::new().into(),
             proof: Proof::default(),
-            outputs: Vec::new(),
+            outputs: Vec::new().into(),
             orchard_bundle: Some(tampered),
         };
         // Same txid, valid binding signature, valid proof.

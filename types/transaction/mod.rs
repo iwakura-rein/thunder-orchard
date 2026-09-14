@@ -6,13 +6,16 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
+    MerkleRoot,
     authorization::Authorization,
     error,
-    hashes::{Hash, M6id, Txid},
+    hashes::{self, Hash, M6id, Txid},
     orchard::{self, BundleAuthorization},
     schema,
 };
 
+pub mod inputs;
+pub use inputs::Inputs;
 pub mod outpoint;
 pub use outpoint::{OutPoint, OutPointKey};
 pub mod output;
@@ -20,6 +23,8 @@ pub use output::{
     Content as OutputContent, Output, Pointed as PointedOutput,
     PointedOutputRef,
 };
+pub mod outputs;
+pub use outputs::Outputs;
 
 pub trait GetValue {
     fn get_value(&self) -> bitcoin::Amount;
@@ -67,12 +72,11 @@ where
     Auth: BundleAuthorization,
 {
     #[schema(value_type = Vec<(OutPoint, String)>)]
-    pub inputs: Vec<(OutPoint, Hash)>,
+    pub inputs: Inputs<(OutPoint, Hash)>,
     /// Utreexo proof for inputs
     #[borsh(skip)]
     #[schema(value_type = schema::UtreexoProof)]
     pub proof: UtreexoProof,
-    pub outputs: Vec<Output>,
     #[borsh(bound(serialize = "orchard::Bundle<Auth>: BorshSerialize"))]
     #[schema(schema_with =
         <schema::Optional::<
@@ -80,6 +84,7 @@ where
         > as utoipa::PartialSchema>::schema
     )]
     pub orchard_bundle: Option<orchard::Bundle<Auth>>,
+    pub outputs: Outputs,
 }
 
 pub type MissingOrchardAuthorization = Transaction<
@@ -90,6 +95,35 @@ impl<Auth> Transaction<Auth>
 where
     Auth: BundleAuthorization,
 {
+    pub(crate) fn compute_merkle_root(&self) -> MerkleRoot {
+        let Self {
+            inputs,
+            proof: _,
+            orchard_bundle,
+            outputs,
+        } = self;
+        // Borsh encoding for hashing
+        #[derive(BorshSerialize)]
+        struct HashComponents {
+            inputs_commitment: MerkleRoot,
+            orchard_bundle_commitment: Hash,
+            outputs_commitment: MerkleRoot,
+        }
+        let inputs_commitment = inputs.compute_merkle_root();
+        let orchard_bundle_commitment = hashes::hash(
+            &orchard_bundle
+                .as_ref()
+                .map(orchard::BorshSerializeWithoutAuth::wrap_ref),
+        );
+        let outputs_commitment = outputs.compute_merkle_root();
+        hashes::hash(&HashComponents {
+            inputs_commitment,
+            orchard_bundle_commitment,
+            outputs_commitment,
+        })
+        .into()
+    }
+
     pub fn txid(&self) -> Txid {
         thread_local! {
             static HASHER: std::cell::RefCell<blake3::Hasher> =
@@ -112,11 +146,13 @@ where
             BorshSerialize::serialize(&outputs, &mut *hasher)
                 .expect("failed to serialize with borsh to compute a hash");
             // Orchard bundle without auth
-            if let Some(orchard_bundle) = orchard_bundle {
-                orchard_bundle
-                    .borsh_serialize_without_auth(&mut *hasher)
-                    .expect("failed to serialize with borsh to compute a hash");
-            }
+            borsh::to_writer(
+                &mut *hasher,
+                &orchard_bundle
+                    .as_ref()
+                    .map(orchard::BorshSerializeWithoutAuth::wrap_ref),
+            )
+            .expect("failed to serialize with borsh to compute a hash");
             hasher.finalize().into()
         });
         Txid(hash)
@@ -244,7 +280,8 @@ mod test {
     use crate::{
         address::TransparentAddress,
         transaction::{
-            FilledTransaction, GetValue, Output, OutputContent, Transaction,
+            FilledTransaction, GetValue, Output, OutputContent, Outputs,
+            Transaction,
         },
     };
 
@@ -273,7 +310,7 @@ mod test {
         };
         let withdrawal_tx = |funding| FilledTransaction {
             transaction: Transaction {
-                outputs: vec![withdrawal.clone()],
+                outputs: Outputs(vec![withdrawal.clone()]),
                 ..Default::default()
             },
             spent_utxos: vec![value_output(funding)],
