@@ -22,8 +22,8 @@ use crate::{
         test::fresh_state,
     },
     types::{
-        AccumulatorDiff, AuthorizedTransaction, Body, Coinbase, Header,
-        OutPoint, Output, OutputContent, PointedOutput, Transaction,
+        AccumulatorDiff, AuthorizedTransaction, BlockHash, Body, Coinbase,
+        Header, OutPoint, Output, OutputContent, PointedOutput, Transaction,
         TransparentAddress, UtreexoNodeHash, UtreexoProof, authorization,
         orchard as o,
     },
@@ -162,14 +162,18 @@ fn build_attack_tx(
 fn expected_roots(
     state: &State,
     rotxn: &RoTxn,
+    prev_main_hash: &bitcoin::BlockHash,
+    prev_side_hash: Option<&BlockHash>,
     body: &Body,
 ) -> Vec<UtreexoNodeHash> {
     let mut acc = state.get_accumulator(rotxn).unwrap();
     let mut diff = AccumulatorDiff::default();
     let merkle_root = body.compute_merkle_root();
+    let coinbase_txid =
+        Coinbase::compute_txid(&merkle_root, prev_main_hash, prev_side_hash);
     for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         diff.insert(
@@ -235,11 +239,21 @@ fn forged_anchor_rejected_in_block() -> anyhow::Result<()> {
     let body = Body::new(vec![auth_tx], Coinbase::default());
     let header = {
         let rotxn = env.read_txn().unwrap();
+        let prev_main_hash = bitcoin::BlockHash::from_byte_array([0u8; 32]);
+        // None at genesis
+        let prev_side_hash = state.try_get_tip(&rotxn).unwrap();
+        let roots = expected_roots(
+            &state,
+            &rotxn,
+            &prev_main_hash,
+            prev_side_hash.as_ref(),
+            &body,
+        );
         Header {
             merkle_root: body.compute_merkle_root(),
-            prev_side_hash: state.try_get_tip(&rotxn).unwrap(), // None at genesis
-            prev_main_hash: bitcoin::BlockHash::from_byte_array([0u8; 32]),
-            roots: expected_roots(&state, &rotxn, &body),
+            prev_main_hash,
+            prev_side_hash,
+            roots,
         }
     };
     {

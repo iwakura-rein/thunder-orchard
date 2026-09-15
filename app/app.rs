@@ -13,7 +13,8 @@ use thunder_orchard::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, Coinbase, InPoint, OutPoint, Transaction, TransparentAddress,
+        self, Body, Coinbase, InPoint, OutPoint, Transaction,
+        TransparentAddress,
         proto::mainchain::{
             self,
             generated::{
@@ -54,8 +55,8 @@ pub enum Error {
     RequestMainchainAncestorInfos { block_hash: bitcoin::BlockHash },
     #[error("Failed to submit transaction")]
     SubmitTransaction(#[from] node::error::SubmitTransaction),
-    #[error("Utreexo error: {0}")]
-    Utreexo(String),
+    #[error(transparent)]
+    Utreexo(thunder_orchard::types::UtreexoError),
     #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
     VerifyMainchainServices {
         url: Box<url::Url>,
@@ -610,6 +611,7 @@ impl App {
                 }
             };
             let body = types::Body::new(txs, coinbase);
+            let merkle_root = body.compute_merkle_root();
             let roots = {
                 let mut accumulator = {
                     let rotxn = self
@@ -622,8 +624,18 @@ impl App {
                         .get_accumulator(&rotxn, &tip_hash)
                         .map_err(node::Error::from)?
                 };
-                body.modify_memforest(&mut accumulator.0)
-                    .map_err(Error::Utreexo)?;
+                let coinbase_txid = Coinbase::compute_txid(
+                    &merkle_root,
+                    &prev_main_hash,
+                    prev_side_hash.as_ref(),
+                );
+                let () = Body::modify_memforest(
+                    coinbase_txid,
+                    &body.coinbase.outputs.0,
+                    &body.transactions,
+                    &mut accumulator.0,
+                )
+                .map_err(Error::Utreexo)?;
                 accumulator
                     .0
                     .get_roots()

@@ -28,8 +28,8 @@ pub mod node {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
-        Authorization, Block, BlockHash, Body, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        Authorization, Block, BlockHash, Body, CoinbaseTxid, Header, InPoint,
+        M6id, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
         SpentOutput, Transaction, TransparentAddress, Txid, WithdrawalBundle,
         WithdrawalBundleStatus,
         net::{Peer, PeerAddress, PeerConnectionStatus},
@@ -157,8 +157,8 @@ pub mod node {
             use l2l_openapi::open_api;
             use serde::Serialize;
             use thunder_orchard_types::{
-                Authorization, Block, BlockHash, Body, Coinbase, Header,
-                MerkleRoot, Output, OutputContent, Transaction,
+                Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid,
+                Header, MerkleRoot, Output, OutputContent, Transaction,
                 TransparentAddress, Txid, transaction::Outputs,
             };
             use typewit::const_marker::Bool;
@@ -194,11 +194,12 @@ pub mod node {
             /// manually
             #[open_api(ref_schemas[
                 Authorization, Block, BlockHash, BlockVerbose, Body,
-                BodyVerbose, Coinbase, Header, MerkleRoot, Output,
-                OutputContent, Outputs, Transaction, TransactionVerbose,
-                TransparentAddress, Txid, schema::BitcoinAddr,
-                schema::BitcoinBlockHash, schema::BitcoinOutPoint,
-                schema::UtreexoNodeHash, schema::UtreexoProof,
+                BodyVerbose, Coinbase, CoinbaseTxid, Header, MerkleRoot,
+                Output, OutputContent, Outputs, Transaction,
+                TransactionVerbose, TransparentAddress, Txid,
+                schema::BitcoinAddr, schema::BitcoinBlockHash,
+                schema::BitcoinOutPoint, schema::UtreexoNodeHash,
+                schema::UtreexoProof,
             ])]
             #[rpc(server, server_bounds(Self: private::Sealed))]
             pub trait Rpc {
@@ -263,14 +264,15 @@ pub mod node {
     #[open_api(
         merge_apis[get_block::RpcDoc],
         ref_schemas[
-            Authorization, BlockHash, Body, Header, InPoint, M6id,
-            MerkleRoot, OutPoint, Output, OutputContent, PeerConnectionStatus,
-            SpentOutput, Transaction, TransparentAddress, Txid,
-            WithdrawalBundle, WithdrawalBundleInfo, WithdrawalBundleStatus,
-            schema::BitcoinAddr, schema::BitcoinBlockHash,
-            schema::BitcoinOutPoint, schema::BitcoinTransaction,
-            schema::BitcoinOutPoint, schema::BitcoinTransaction,
-            schema::SocketAddr, schema::UtreexoNodeHash, schema::UtreexoProof,
+            Authorization, BlockHash, Body, CoinbaseTxid, Header, InPoint,
+            M6id, MerkleRoot, OutPoint, Output, OutputContent,
+            PeerConnectionStatus, SpentOutput, Transaction, TransparentAddress,
+            Txid, WithdrawalBundle, WithdrawalBundleInfo,
+            WithdrawalBundleStatus, schema::BitcoinAddr,
+            schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+            schema::BitcoinTransaction, schema::BitcoinOutPoint,
+            schema::BitcoinTransaction, schema::SocketAddr,
+            schema::UtreexoNodeHash, schema::UtreexoProof,
         ],
     )]
     #[rpc(
@@ -410,9 +412,10 @@ pub mod wallet {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
-        Authorization, Block, BlockHash, Body, Coinbase, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        ShieldedAddress, SpentOutput, Transaction, TransparentAddress, Txid,
+        Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid, Header,
+        InPoint, M6id, MerkleRoot, OutPoint, Output, OutputContent,
+        PointedOutput, ShieldedAddress, SpentOutput, Transaction,
+        TransparentAddress, Txid,
         transaction::{self, Outputs},
         wallet::Balance,
     };
@@ -432,10 +435,10 @@ pub mod wallet {
     }
 
     #[open_api(ref_schemas[
-        Authorization, Block, BlockHash, Body, Coinbase, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, Output, OutputContent, Outputs, PointedOutput,
-        Transaction, TransparentAddress, Txid, schema::BitcoinAddr,
-        schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+        Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid, Header,
+        InPoint, M6id, MerkleRoot, OutPoint, Output, OutputContent, Outputs,
+        PointedOutput, Transaction, TransparentAddress, Txid,
+        schema::BitcoinAddr, schema::BitcoinBlockHash, schema::BitcoinOutPoint,
         schema::UtreexoNodeHash, schema::UtreexoProof,
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]

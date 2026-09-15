@@ -10,7 +10,10 @@ use crate::{
     authorization::Authorization,
     block::coinbase::Coinbase,
     error,
-    hashes::{self, Hash, MerkleRoot, UtreexoNodeHash},
+    hashes::{
+        self, CoinbaseMerkleRoot, CoinbaseTxid, Hash, MerkleRoot,
+        UtreexoNodeHash,
+    },
     transaction::{
         AuthorizedTransaction, GetValue, OutPoint, Output, PointedOutput,
         Transaction,
@@ -132,7 +135,7 @@ impl Body {
         // Borsh encoding for hashing
         #[derive(BorshSerialize)]
         struct HashComponents {
-            coinbase_commitment: MerkleRoot,
+            coinbase_commitment: CoinbaseMerkleRoot,
             txs_commitment: Hash,
         }
         hashes::hash(&HashComponents {
@@ -143,18 +146,22 @@ impl Body {
     }
 
     // Modifies the memforest, without checking tx proofs
-    pub fn modify_memforest(
-        &self,
+    pub fn modify_memforest<Tx>(
+        coinbase_txid: CoinbaseTxid,
+        coinbase_outputs: &[Output],
+        txs: &[Tx],
         memforest: &mut MemForest<UtreexoNodeHash>,
-    ) -> Result<(), String> {
+    ) -> Result<(), error::Utreexo>
+    where
+        Tx: Borrow<Transaction>,
+    {
         // New leaves for the accumulator
         let mut accumulator_add = Vec::<UtreexoNodeHash>::new();
         // Accumulator leaves to delete
         let mut accumulator_del = Vec::<UtreexoNodeHash>::new();
-        let merkle_root = self.compute_merkle_root();
-        for (vout, output) in self.coinbase.outputs.iter().enumerate() {
+        for (vout, output) in coinbase_outputs.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
-                merkle_root,
+                txid: coinbase_txid,
                 vout: vout as u32,
             };
             let pointed_output = PointedOutput {
@@ -163,12 +170,13 @@ impl Body {
             };
             accumulator_add.push((&pointed_output).into());
         }
-        for transaction in &self.transactions {
-            let txid = transaction.txid();
-            for (_, utxo_hash) in transaction.inputs.iter() {
+        for tx in txs {
+            let tx = tx.borrow();
+            let txid = tx.txid();
+            for (_, utxo_hash) in tx.inputs.iter() {
                 accumulator_del.push(utxo_hash.into());
             }
-            for (vout, output) in transaction.outputs.iter().enumerate() {
+            for (vout, output) in tx.outputs.iter().enumerate() {
                 let outpoint = OutPoint::Regular {
                     txid,
                     vout: vout as u32,
@@ -180,7 +188,10 @@ impl Body {
                 accumulator_add.push((&pointed_output).into());
             }
         }
-        memforest.modify(&accumulator_add, &accumulator_del)
+        let () = memforest
+            .modify(&accumulator_add, &accumulator_del)
+            .map_err(error::Utreexo)?;
+        Ok(())
     }
 
     pub fn get_inputs(&self) -> Vec<OutPoint> {
@@ -191,17 +202,23 @@ impl Body {
             .collect()
     }
 
-    pub fn get_outputs(&self) -> HashMap<OutPoint, Output> {
+    pub fn get_outputs(
+        coinbase_txid: CoinbaseTxid,
+        coinbase: &Coinbase,
+        txs: &[Transaction],
+    ) -> HashMap<OutPoint, Output> {
         let mut outputs = HashMap::new();
-        let merkle_root = self.compute_merkle_root();
-        for (vout, output) in self.coinbase.outputs.iter().enumerate() {
+        for (vout, output) in coinbase.outputs.iter().enumerate() {
             let vout = vout as u32;
-            let outpoint = OutPoint::Coinbase { merkle_root, vout };
+            let outpoint = OutPoint::Coinbase {
+                txid: coinbase_txid,
+                vout,
+            };
             outputs.insert(outpoint, output.clone());
         }
-        for transaction in &self.transactions {
-            let txid = transaction.txid();
-            for (vout, output) in transaction.outputs.iter().enumerate() {
+        for tx in txs {
+            let txid = tx.txid();
+            for (vout, output) in tx.outputs.iter().enumerate() {
                 let vout = vout as u32;
                 let outpoint = OutPoint::Regular { txid, vout };
                 outputs.insert(outpoint, output.clone());

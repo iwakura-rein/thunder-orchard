@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    MerkleRoot,
     authorization::Authorization,
     error,
-    hashes::{self, Hash, M6id, Txid},
+    hashes::{
+        self, Hash, InputsMerkleRoot, M6id, OutputsMerkleRoot, TxMerkleRoot,
+        Txid,
+    },
     orchard::{self, BundleAuthorization},
     schema,
 };
@@ -95,7 +97,7 @@ impl<Auth> Transaction<Auth>
 where
     Auth: BundleAuthorization,
 {
-    pub(crate) fn compute_merkle_root(&self) -> MerkleRoot {
+    pub(crate) fn compute_merkle_root(&self) -> TxMerkleRoot {
         let Self {
             inputs,
             proof: _,
@@ -105,9 +107,9 @@ where
         // Borsh encoding for hashing
         #[derive(BorshSerialize)]
         struct HashComponents {
-            inputs_commitment: MerkleRoot,
+            inputs_commitment: InputsMerkleRoot,
             orchard_bundle_commitment: Hash,
-            outputs_commitment: MerkleRoot,
+            outputs_commitment: OutputsMerkleRoot,
         }
         let inputs_commitment = inputs.compute_merkle_root();
         let orchard_bundle_commitment = hashes::hash(

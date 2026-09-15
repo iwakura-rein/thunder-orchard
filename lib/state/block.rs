@@ -42,6 +42,7 @@ pub fn validate(
     if body_size > State::body_size_limit(height) {
         return Err(Error::BodyTooLarge);
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state.utreexo_accumulator.get(rotxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
@@ -58,7 +59,7 @@ pub fn validate(
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -206,12 +207,13 @@ pub fn prevalidate(
         };
         return Err(Error::InvalidBody(err));
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -339,7 +341,7 @@ pub fn connect_prevalidated(
     body: &Body,
     prevalidated: PrevalidatedBlock,
 ) -> Result<Option<orchard::Frontier>, error::ConnectBlock> {
-    let merkle_root = prevalidated.computed_merkle_root;
+    let coinbase_txid = header.compute_coinbase_txid();
 
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let accumulator_diff = prevalidated.accumulator_diff;
@@ -359,7 +361,7 @@ pub fn connect_prevalidated(
     // Collect coinbase UTXOs
     for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let key = OutPointKey::from(outpoint);
@@ -548,6 +550,7 @@ pub fn connect(
         };
         return Err(err.into());
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut frontier = state
@@ -557,7 +560,7 @@ pub fn connect(
         .map_err(error::Orchard::from)?;
     for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -677,10 +680,11 @@ pub fn disconnect_tip(
     prev_note_commitments_merkle_frontier: Option<&orchard::Frontier>,
 ) -> Result<(), Error> {
     let tip_hash = state.tip.try_get(rwtxn, &())?.ok_or(Error::NoTip)?;
-    if tip_hash != header.hash() {
+    let block_hash = header.hash();
+    if tip_hash != block_hash {
         let err = error::InvalidHeader::BlockHash {
             expected: tip_hash,
-            computed: header.hash(),
+            computed: block_hash,
         };
         return Err(Error::InvalidHeader(err));
     }
@@ -692,6 +696,7 @@ pub fn disconnect_tip(
         };
         return Err(Error::InvalidBody(err));
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     tracing::debug!("Got acc");
     let mut accumulator_diff = AccumulatorDiff::default();
@@ -707,7 +712,7 @@ pub fn disconnect_tip(
         .rev()
         .try_for_each(|(vout, output)| {
             let outpoint = OutPoint::Coinbase {
-                merkle_root,
+                txid: coinbase_txid,
                 vout: vout as u32,
             };
             let pointed_output = PointedOutput {
