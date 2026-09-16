@@ -6,7 +6,7 @@ use transitive::Transitive;
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash, Hash, M6id,
     MerkleRoot, OutPoint, TransparentAddress, Txid, UtreexoError,
-    WithdrawalBundleError, orchard,
+    WithdrawalBundleError, error, orchard,
 };
 
 #[derive(Debug, Error)]
@@ -214,6 +214,10 @@ impl From<db::Error> for ConnectTransaction {
 #[transitive(from(db::Put, db::Error))]
 #[transitive(from(db::TryGet, db::Error))]
 pub enum ConnectBlock {
+    #[error("failed to verify authorization")]
+    Authorization(#[from] error::Authorization),
+    #[error("body too large")]
+    BodyTooLarge,
     #[error("error connecting transaction (`{txid}`)")]
     ConnectTransaction {
         txid: Txid,
@@ -225,26 +229,22 @@ pub enum ConnectBlock {
     InvalidBody(#[from] InvalidBody),
     #[error("invalid header: {0}")]
     InvalidHeader(InvalidHeader),
-    #[error("Orchard error")]
-    Orchard(#[from] Orchard),
-    #[error(transparent)]
-    Utreexo(#[from] UtreexoError),
-    #[error("failed to verify authorization")]
-    AuthorizationError,
     #[error("total fees less than coinbase value")]
     NotEnoughFees,
-    #[error("wrong public key for address")]
-    WrongPubKeyForAddress,
-    #[error("Computed Utreexo roots do not match the header roots")]
-    UtreexoRootsMismatch,
-    #[error("too many sigops")]
-    TooManySigops,
-    #[error("body too large")]
-    BodyTooLarge,
-    #[error("utxo double spent")]
-    UtxoDoubleSpent,
+    #[error("Orchard error")]
+    Orchard(#[from] Orchard),
     #[error("other error: {0}")]
     Other(Box<crate::state::Error>),
+    #[error("too many sigops")]
+    TooManySigops,
+    #[error(transparent)]
+    Utreexo(#[from] UtreexoError),
+    #[error("Computed Utreexo roots do not match the header roots")]
+    UtreexoRootsMismatch,
+    #[error("utxo double spent")]
+    UtxoDoubleSpent,
+    #[error("wrong public key for address")]
+    WrongPubKeyForAddress,
 }
 
 impl From<db::Error> for ConnectBlock {
@@ -353,7 +353,7 @@ impl From<db::Error> for ConnectWithdrawalBundleSubmitted {
 )]
 pub enum Error {
     #[error("failed to verify authorization")]
-    AuthorizationError,
+    Authorization(#[from] error::Authorization),
     #[error(transparent)]
     AmountOverflow(#[from] AmountOverflowError),
     #[error("body too large")]

@@ -304,6 +304,7 @@ impl App {
     }
 
     pub fn new(config: Config) -> Result<Self, Error> {
+        let mut rng = rand::rng();
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -387,6 +388,7 @@ impl App {
             },
             cusf_mainchain,
             cusf_mainchain_block_producer,
+            &mut rng,
             &runtime,
         )?;
         let node = Arc::new(node);
@@ -414,12 +416,16 @@ impl App {
     ) -> Result<Transaction, Error> {
         let wallet_rotxn =
             self.wallet.env().read_txn().map_err(wallet::Error::from)?;
-        let tx = self.wallet.authorize_orchard_bundle(&wallet_rotxn, tx)?;
+        let tx = self.wallet.authorize_orchard_bundle(
+            rand::rng(),
+            &wallet_rotxn,
+            tx,
+        )?;
         Ok(tx)
     }
 
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
-        let authorized_transaction = self.wallet.authorize(tx)?;
+        let authorized_transaction = self.wallet.authorize(rand::rng(), tx)?;
         let mut wallet_rwtxn =
             self.wallet.env().write_txn().map_err(wallet::Error::from)?;
         let txid = authorized_transaction.transaction.txid();

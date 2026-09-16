@@ -14,9 +14,12 @@ fn create_shield_tx(
     fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
     let accumulator = app.node.get_tip_accumulator()?;
-    let tx = app
-        .wallet
-        .create_shield_transaction(&accumulator, amount, fee)?;
+    let tx = app.wallet.create_shield_transaction(
+        rand::rng(),
+        &accumulator,
+        amount,
+        fee,
+    )?;
     let tx = app.authorize_orchard_bundle(tx)?;
     app.sign_and_send(tx)?;
     Ok(())
@@ -84,9 +87,12 @@ fn create_unshield_tx(
     fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
     let accumulator = app.node.get_tip_accumulator()?;
-    let tx =
-        app.wallet
-            .create_unshield_transaction(&accumulator, amount, fee)?;
+    let tx = app.wallet.create_unshield_transaction(
+        rand::rng(),
+        &accumulator,
+        amount,
+        fee,
+    )?;
     let tx = app.authorize_orchard_bundle(tx)?;
     app.sign_and_send(tx)?;
     Ok(())

@@ -15,12 +15,12 @@ pub enum Authorization {
     #[error("borsh serialization error")]
     #[fatal(true)]
     BorshSerialize(#[from] borsh::io::Error),
-    #[error("ed25519_dalek error")]
-    #[fatal(false)]
-    Ed25519(#[from] ed25519_dalek::SignatureError),
     #[error("not enough authorizations")]
     #[fatal(false)]
     NotEnoughAuthorizations,
+    #[error("signature verification error")]
+    #[fatal(false)]
+    SignatureVerification(#[from] frost_ristretto255::Error),
     #[error("too many authorizations")]
     #[fatal(false)]
     TooManyAuthorizations,

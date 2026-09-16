@@ -90,8 +90,9 @@ mod fee_privacy {
     /// each bill a standard denomination shared across users.
     #[test]
     fn cast_decomposes_into_standard_denominations() {
+        let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
         for sats in [1u64, 0b1011, 1_000_000, (1 << 20) + (1 << 5) + 1] {
-            let cast = Cast::new(Amount::from_sat(sats));
+            let cast = Cast::new(&mut rng, Amount::from_sat(sats));
             let mut exps = bill_exponents(&cast);
             exps.sort_unstable();
             let expected: Vec<u32> =
@@ -111,11 +112,13 @@ mod fee_privacy {
     fn all_cast_bills_use_the_same_shared_fee() {
         assert_eq!(Cast::tx_fee(), STANDARD_FEE);
 
+        let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
+
         // Footprint of a bill as seen on chain: an unshield of denomination
         // `2^exp` has transparent output `2^exp` and value balance
         // `2^exp + fee`, so the observer-derived fee is exactly the fee used.
-        let observed_fees = |sats: u64| -> Vec<Amount> {
-            let cast = Cast::new(Amount::from_sat(sats));
+        let mut observed_fees = |sats: u64| -> Vec<Amount> {
+            let cast = Cast::new(&mut rng, Amount::from_sat(sats));
             bill_exponents(&cast)
                 .into_iter()
                 .map(|exp| {
@@ -154,8 +157,9 @@ mod melt_privacy {
     /// longer reveals the exact value of a source UTXO.
     #[test]
     fn melt_decomposes_into_standard_denominations() {
+        let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
         for sats in [1u64, 0b1011, 1_000_000, (1 << 20) + (1 << 5) + 1] {
-            let melt = MeltBatch::new(Amount::from_sat(sats));
+            let melt = MeltBatch::new(&mut rng, Amount::from_sat(sats));
             let mut exps = bill_exponents(&melt);
             exps.sort_unstable();
             let expected: Vec<u32> =

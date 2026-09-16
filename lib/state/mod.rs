@@ -16,12 +16,13 @@ use sneed::{
 use crate::{
     types::{
         self, Accumulator, AmountOverflowError, AmountUnderflowError,
-        Authorization, AuthorizedTransaction, BlockHash, Body,
-        FilledTransaction, GetValue, Header, InPoint, M6id, MerkleRoot,
-        OutPoint, OutPointKey, Output, PointedOutput, PointedOutputRef,
-        SpentOutput, Transaction, TransparentAddress, UtreexoNodeHash,
-        UtreexoProof, VERSION, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetValue,
+        Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey, Output,
+        PointedOutput, PointedOutputRef, SpentOutput, Transaction,
+        TransparentAddress, UtreexoNodeHash, UtreexoProof, VERSION, Version,
+        WithdrawalBundle, WithdrawalBundleStatus,
+        authorization::{self, BatchVerificationContext},
+        proto::mainchain::TwoWayPegData,
         state::WithdrawalBundleInfo,
     },
     util::Watchable,
@@ -440,6 +441,7 @@ impl State {
     pub fn validate_transaction(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         transaction: &AuthorizedTransaction,
     ) -> Result<bitcoin::Amount, error::ValidateTransaction> {
         let filled_transaction = self
@@ -465,7 +467,10 @@ impl State {
         {
             let () = self.validate_orchard_anchor(rotxn, orchard_bundle)?;
         }
-        let () = Authorization::verify_transaction(transaction)?;
+        let () = authorization::verify_authorized_transaction(
+            batch_verification_ctxt,
+            transaction,
+        )?;
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
     }
@@ -572,10 +577,11 @@ impl State {
     pub fn validate_block(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<bitcoin::Amount, Error> {
-        block::validate(self, rotxn, header, body)
+        block::validate(batch_verification_ctxt, self, rotxn, header, body)
     }
 
     /// Returns data that must be archived in order to disconnect to the new
@@ -593,10 +599,11 @@ impl State {
     pub fn prevalidate_block(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<PrevalidatedBlock, Error> {
-        block::prevalidate(self, rotxn, header, body)
+        block::prevalidate(batch_verification_ctxt, self, rotxn, header, body)
     }
 
     pub fn connect_prevalidated_block(
@@ -612,11 +619,12 @@ impl State {
     pub fn apply_block(
         &self,
         rwtxn: &mut RwTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<Option<types::orchard::Frontier>, error::ConnectBlock> {
         let prevalidated = self
-            .prevalidate_block(rwtxn, header, body)
+            .prevalidate_block(rwtxn, batch_verification_ctxt, header, body)
             .map_err(|err| match err {
                 Error::InvalidHeader(h) => {
                     error::ConnectBlock::InvalidHeader(h)
@@ -635,8 +643,8 @@ impl State {
                 Error::WrongPubKeyForAddress => {
                     error::ConnectBlock::WrongPubKeyForAddress
                 }
-                Error::AuthorizationError => {
-                    error::ConnectBlock::AuthorizationError
+                Error::Authorization(err) => {
+                    error::ConnectBlock::Authorization(err)
                 }
                 Error::UtreexoRootsMismatch => {
                     error::ConnectBlock::UtreexoRootsMismatch

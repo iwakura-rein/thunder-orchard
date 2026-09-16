@@ -7,11 +7,13 @@ borsh = { workspace = true, features = ["derive"] }
 bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }
 clap = { workspace = true, features = ["derive"], optional = true }
 const-hex = { workspace = true, features = ["serde"] }
-ed25519-dalek = { workspace = true, features = ["batch", "serde"] }
+curve25519-dalek = { workspace = true, features = ["serde"] }
 educe = { workspace = true, features = ["Clone", "Debug", "Default"] }
 error-fatality = { workspace = true }
 errors = { workspace = true }
 fallible-iterator = { workspace = true, optional = true }
+frost-core = { workspace = true, features = ["internals"] }
+frost-ristretto255 = { workspace = true, features = ["serde"] }
 halo2_proofs = { workspace = true }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true, optional = true }
@@ -20,7 +22,7 @@ merkle-cbt = { workspace = true }
 nonempty = { workspace = true, features = ["serialize"] }
 orchard = { workspace = true }
 parking_lot = { workspace = true, optional = true }
-rand = { workspace = true }
+rand = { workspace = true, features = ["chacha"] }
 rayon = { workspace = true }
 reddsa = { workspace = true, features = ["thiserror"] }
 rustreexo = { workspace = true, features = ["with-serde"] }
@@ -37,8 +39,13 @@ url = { workspace = true, features = ["serde"] }
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
 zcash_note_encryption = { workspace = true }
 
+[dependencies.rand_core_compat]
+features = ["rand_core_0_6", "rand_core_0_10"]
+workspace = true
+
 [dev-dependencies]
 anyhow = { workspace = true }
+rand = { workspace = true, features = ["thread_rng"] }
 
 [features]
 clap = ["dep:clap"]

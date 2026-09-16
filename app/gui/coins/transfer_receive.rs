@@ -20,6 +20,7 @@ fn create_transfer(
     let tx = match dest {
         Address::Shielded(dest) => {
             let tx = app.wallet.create_shielded_transaction(
+                rand::rng(),
                 &accumulator,
                 dest,
                 amount,

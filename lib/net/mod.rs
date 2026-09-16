@@ -21,6 +21,7 @@ use crate::{
     state::State,
     types::{
         AuthorizedTransaction, Network, VERSION, Version,
+        authorization::BatchVerificationContext,
         net::{
             DEFAULT_PORT, Peer, PeerAddress, PeerConnectionStatus,
             ResolvedPeerAddress,
@@ -301,6 +302,7 @@ impl DialKnownPeersHandle {
 pub struct Net {
     pub server: Endpoint,
     archive: Archive,
+    pub(crate) batch_verification_ctxt: BatchVerificationContext,
     pub dns_resolver: Arc<TokioResolver>,
     magic_bytes: peer_message::MagicBytes,
     state: State,
@@ -418,6 +420,7 @@ impl Net {
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
+            batch_verification_ctxt: self.batch_verification_ctxt,
             magic_bytes: self.magic_bytes,
             resolved_address: resolved_addr,
             state: self.state.clone(),
@@ -476,6 +479,7 @@ impl Net {
         runtime: &tokio::runtime::Handle,
         env: &Env<heed::WithoutTls>,
         archive: Archive,
+        batch_verification_ctxt: BatchVerificationContext,
         magic_bytes_override: Option<peer_message::MagicBytes>,
         network: Network,
         state: State,
@@ -539,6 +543,7 @@ impl Net {
         let net = Net {
             server,
             archive,
+            batch_verification_ctxt,
             dns_resolver,
             magic_bytes,
             state,
@@ -624,6 +629,7 @@ impl Net {
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
+            batch_verification_ctxt: self.batch_verification_ctxt,
             magic_bytes: self.magic_bytes,
             resolved_address: addr.into(),
             state: self.state.clone(),

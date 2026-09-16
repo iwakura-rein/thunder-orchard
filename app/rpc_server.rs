@@ -415,6 +415,7 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = tokio::task::block_in_place(|| {
             self.app.wallet.create_shield_transaction(
+                rand::rng(),
                 &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
@@ -437,6 +438,7 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = tokio::task::block_in_place(|| {
             self.app.wallet.create_shielded_transaction(
+                rand::rng(),
                 &accumulator,
                 dest,
                 Amount::from_sat(value_sats),
@@ -483,6 +485,7 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = tokio::task::block_in_place(|| {
             self.app.wallet.create_unshield_transaction(
+                rand::rng(),
                 &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
@@ -725,8 +728,11 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
         transaction: thunder_orchard::types::Transaction,
         broadcast: Option<bool>,
     ) -> RpcResult<thunder_orchard::types::AuthorizedTransaction> {
-        let mut authorized =
-            self.app.wallet.authorize(transaction).map_err(custom_err)?;
+        let mut authorized = self
+            .app
+            .wallet
+            .authorize(rand::rng(), transaction)
+            .map_err(custom_err)?;
         if let Some(true) = broadcast {
             let () = self
                 .app

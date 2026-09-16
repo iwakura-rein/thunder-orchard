@@ -153,7 +153,7 @@ impl MeltInner {
         match self {
             Self::MeltInput(melt_input) => {
                 if let Some(amount) = melt_input.show(app, ui).inner {
-                    let melt_batch = MeltBatch::new(amount);
+                    let melt_batch = MeltBatch::new(rand::rng(), amount);
                     let melting = Melting::new(app.unwrap(), melt_batch);
                     *self = Self::Melting(melting);
                 }
@@ -310,7 +310,7 @@ impl CastInner {
         match self {
             Self::CastInput(cast_input) => {
                 if let Some(amount) = cast_input.show(app, ui).inner {
-                    let cast = wallet::Cast::new(amount);
+                    let cast = wallet::Cast::new(rand::rng(), amount);
                     let casting = Casting::new(app.unwrap(), cast);
                     *self = Self::Casting(casting);
                 }

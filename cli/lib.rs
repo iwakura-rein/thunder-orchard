@@ -4,13 +4,13 @@ use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder_orchard::types::{
-    M6id, ShieldedAddress, TransparentAddress, Txid, net::PeerAddress,
-};
 use thunder_orchard_app_rpc_api::{
     node::{PrivateRpcClient as _, RpcClient as _, get_block::RpcClient as _},
     typewit::const_marker::Bool,
     wallet::RpcClient as _,
+};
+use thunder_orchard_types::{
+    M6id, ShieldedAddress, TransparentAddress, Txid, net::PeerAddress,
 };
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -104,7 +104,7 @@ pub enum Command {
     GetBestSidechainBlockHash,
     /// Get the block with specified block hash, if it exists
     GetBlock {
-        block_hash: thunder_orchard::types::BlockHash,
+        block_hash: thunder_orchard_types::BlockHash,
         verbose: Option<bool>,
     },
     /// Get the current block count
@@ -116,7 +116,7 @@ pub enum Command {
     GetBlockTemplate,
     /// Get mainchain blocks that commit to a specified block hash
     GetBmmInclusions {
-        block_hash: thunder_orchard::types::BlockHash,
+        block_hash: thunder_orchard_types::BlockHash,
     },
     /// Get a new shielded address
     GetNewShieldedAddress,
@@ -151,7 +151,7 @@ pub enum Command {
     /// Invalidate a block, potentially re-orging to a valid ancestor of the
     /// current tip.
     InvalidateBlock {
-        block_hash: thunder_orchard::types::BlockHash,
+        block_hash: thunder_orchard_types::BlockHash,
     },
     /// Get the height of the latest failed withdrawal bundle
     LatestFailedWithdrawalBundleHeight,
@@ -177,8 +177,8 @@ pub enum Command {
     SidechainWealth,
     /// Sign a transaction, and optionally broadcast it.
     SignTransaction {
-        #[arg(value_parser = JsonParser::<thunder_orchard::types::Transaction>::parse)]
-        transaction: thunder_orchard::types::Transaction,
+        #[arg(value_parser = JsonParser::<thunder_orchard_types::Transaction>::parse)]
+        transaction: thunder_orchard_types::Transaction,
         #[arg(default_value_t = false)]
         broadcast: bool,
     },
@@ -186,9 +186,9 @@ pub enum Command {
     SubmitTransaction {
         #[arg(
             value_parser =
-                JsonParser::<thunder_orchard::types::AuthorizedTransaction>::parse
+                JsonParser::<thunder_orchard_types::AuthorizedTransaction>::parse
         )]
-        transaction: thunder_orchard::types::AuthorizedTransaction,
+        transaction: thunder_orchard_types::AuthorizedTransaction,
     },
     /// Stop the node
     Stop,
@@ -197,7 +197,7 @@ pub enum Command {
 fn default_rpc_url() -> url::Url {
     url::Url::parse(&format!(
         "http://localhost:60{}",
-        thunder_orchard::types::THIS_SIDECHAIN
+        thunder_orchard_types::THIS_SIDECHAIN
     ))
     .unwrap()
 }

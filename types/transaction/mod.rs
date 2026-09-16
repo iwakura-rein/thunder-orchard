@@ -174,12 +174,16 @@ impl<S> Transaction<orchard::InProgress<orchard::Unproven, S>>
 where
     S: orchard::InProgressSignatures,
 {
-    pub fn create_proof(
+    pub fn create_proof<R>(
         self,
+        rng: R,
     ) -> Result<
         Transaction<orchard::InProgress<orchard::BundleProof, S>>,
         orchard::BuildError,
-    > {
+    >
+    where
+        R: orchard::CryptoRng,
+    {
         let Self {
             inputs,
             proof,
@@ -187,7 +191,7 @@ where
             orchard_bundle,
         } = self;
         let orchard_bundle = orchard_bundle
-            .map(|bundle| bundle.create_proof(rand::rngs::OsRng))
+            .map(|bundle| bundle.create_proof(rng))
             .transpose()?;
         let res = Transaction {
             inputs,

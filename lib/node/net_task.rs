@@ -38,15 +38,18 @@ use crate::{
     state::{self, State},
     types::{
         BmmResult, Body, Header, Tip,
+        authorization::BatchVerificationContext,
         net::ResolvedPeerAddress,
         proto::mainchain::{self, Event as MainchainBlockEvent},
     },
     util::{ErrorChain, join_set},
 };
 
+#[allow(clippy::too_many_arguments)]
 fn connect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
+    batch_verification_ctxt: &BatchVerificationContext,
     mempool: &MemPool,
     state: &State,
     header: &Header,
@@ -59,14 +62,14 @@ fn connect_tip_(
         let merkle_root = body.compute_merkle_root();
         let height = state.try_get_height(rwtxn).map_err(state::Error::from)?;
         let orchard_frontier = state
-            .apply_block(rwtxn, header, body)
+            .apply_block(rwtxn, batch_verification_ctxt, header, body)
             .map_err(state::Error::from)?;
         tracing::debug!(?height, %merkle_root, %block_hash,
                             "connected body");
         orchard_frontier
     } else {
         state
-            .apply_block(rwtxn, header, body)
+            .apply_block(rwtxn, batch_verification_ctxt, header, body)
             .map_err(state::Error::from)?
     };
     if let Some(orchard_frontier) = orchard_frontier {
@@ -230,6 +233,7 @@ fn is_fatal_reorg_error(err: &Error) -> bool {
 fn reorg_to_tip<ThreadLocalStorage>(
     env: &sneed::Env<ThreadLocalStorage>,
     archive: &Archive,
+    batch_verification_ctxt: &BatchVerificationContext,
     mempool: &MemPool,
     state: &State,
     new_tip: Tip,
@@ -362,6 +366,7 @@ fn reorg_to_tip<ThreadLocalStorage>(
         let () = match connect_tip_(
             &mut rwtxn,
             archive,
+            batch_verification_ctxt,
             mempool,
             state,
             &header,
@@ -889,6 +894,7 @@ impl NetTask {
             let _: bool = reorg_to_tip(
                 &ctxt.env,
                 &ctxt.archive,
+                &ctxt.net.batch_verification_ctxt,
                 &ctxt.mempool,
                 &ctxt.state,
                 best_side_tip,
@@ -1141,6 +1147,7 @@ impl NetTask {
                         reorg_to_tip(
                             &self.ctxt.env,
                             &self.ctxt.archive,
+                            &self.ctxt.net.batch_verification_ctxt,
                             &self.ctxt.mempool,
                             &self.ctxt.state,
                             new_tip,

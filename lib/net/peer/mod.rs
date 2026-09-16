@@ -19,7 +19,9 @@ use crate::{
     archive::Archive,
     state::State,
     types::{
-        AuthorizedTransaction, Hash, Tip, Version, hash,
+        AuthorizedTransaction, Hash, Tip, Version,
+        authorization::BatchVerificationContext,
+        hash,
         net::{PeerConnectionStatus, ResolvedPeerAddress},
     },
     util::ErrorChain,
@@ -362,6 +364,7 @@ impl Connection {
 pub struct ConnectionContext {
     pub env: sneed::Env<heed::WithoutTls>,
     pub archive: Archive,
+    pub batch_verification_ctxt: BatchVerificationContext,
     pub magic_bytes: message::MagicBytes,
     pub resolved_address: ResolvedPeerAddress,
     pub state: State,
