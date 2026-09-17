@@ -529,7 +529,6 @@ pub struct Tip {
 )]
 pub enum Network {
     #[default]
-    Alphanet,
     Betanet,
     Forknet,
     Regtest,
