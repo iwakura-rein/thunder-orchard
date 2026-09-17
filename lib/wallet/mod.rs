@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
 };
 
@@ -88,6 +88,12 @@ pub enum Error {
     DbRead(#[from] RoTxnError),
     #[error("Database write error")]
     DbWrite(#[from] RwTxnError),
+    #[error(
+        "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
+        .version,
+        .db_path.display()
+    )]
+    IncompatibleVersion { version: Version, db_path: PathBuf },
     #[error("io error")]
     Io(#[from] std::io::Error),
     #[error("no index for address {address}")]
@@ -309,9 +315,23 @@ impl Wallet {
             DatabaseUnique::create(&env, &mut rwtxn, "stxos_unconfirmed")?;
         let tip = DatabaseUnique::create(&env, &mut rwtxn, "tip")?;
         let version = DatabaseUnique::create(&env, &mut rwtxn, "version")?;
-        if version.try_get(&rwtxn, &())?.is_none() {
-            version.put(&mut rwtxn, &(), &*VERSION)?;
-        }
+        match version.try_get(&rwtxn, &())? {
+            Some(db_version)
+                if db_version
+                    < Version {
+                        major: 0,
+                        minor: 18,
+                        patch: 0,
+                    } =>
+            {
+                return Err(Error::IncompatibleVersion {
+                    version: db_version,
+                    db_path: env.path().to_path_buf(),
+                });
+            }
+            Some(_) => (),
+            None => version.put(&mut rwtxn, &(), &*VERSION)?,
+        };
         rwtxn.commit()?;
         Ok(Self {
             env,

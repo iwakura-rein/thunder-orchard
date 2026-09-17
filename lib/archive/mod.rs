@@ -128,28 +128,22 @@ impl Archive {
         let version =
             DatabaseUnique::create(env, &mut rwtxn, "archive_version")
                 .map_err(EnvError::from)?;
-        match version.try_get(&rwtxn, &()).map_err(DbError::from)? {
+        match version.try_get(&rwtxn, &())? {
             Some(db_version)
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 16,
+                        minor: 18,
                         patch: 0,
                     } =>
             {
-                // `txid_to_inclusions` added in 0.16.0
-                // Merkle root structure changed in 0.13.0
-                // `deposits` and `main_bmm_commitments` were removed in
-                // 0.12.0, and `main_block_infos` was added
                 return Err(Error::IncompatibleVersion {
                     version: db_version,
                     db_path: env.path().to_path_buf(),
                 });
             }
             Some(_) => (),
-            None => version
-                .put(&mut rwtxn, &(), &*VERSION)
-                .map_err(DbError::from)?,
+            None => version.put(&mut rwtxn, &(), &*VERSION)?,
         }
         let accumulators =
             DatabaseUnique::create(env, &mut rwtxn, "accumulators")?;

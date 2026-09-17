@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use error_fatality::{Fatality, Split};
 use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
 use thiserror::Error;
@@ -5,7 +7,7 @@ use transitive::Transitive;
 
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash, Hash, M6id,
-    MerkleRoot, OutPoint, TransparentAddress, Txid, UtreexoError,
+    MerkleRoot, OutPoint, TransparentAddress, Txid, UtreexoError, Version,
     WithdrawalBundleError, error, orchard,
 };
 
@@ -368,6 +370,12 @@ pub enum Error {
     Db(Box<sneed::Error>),
     #[error("failed to fill inputs for tx ({txid})")]
     FillTransaction { source: FillTransaction, txid: Txid },
+    #[error(
+        "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
+        .version,
+        .db_path.display()
+    )]
+    IncompatibleVersion { version: Version, db_path: PathBuf },
     #[error(transparent)]
     InvalidBody(InvalidBody),
     #[error("invalid header: {0}")]
