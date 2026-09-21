@@ -14,6 +14,8 @@ mod address;
 pub use address::{Address, ShieldedAddress, TransparentAddress};
 pub mod authorization;
 pub use authorization::Authorization;
+pub mod block;
+pub use block::{Block, Body, Header};
 pub mod error;
 pub use error::{
     AmountOverflow as AmountOverflowError,
@@ -32,7 +34,7 @@ pub mod schema;
 pub mod state;
 pub mod transaction;
 pub use transaction::{
-    AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
+    AuthorizedTransaction, Content as OutputContent, FilledTransaction,
     GetValue, InPoint, OutPoint, OutPointKey, Output, Pointed, PointedOutput,
     PointedOutputRef, SpentOutput, Transaction,
 };
@@ -43,35 +45,6 @@ pub mod wallet;
 pub const THIS_SIDECHAIN: u8 = 98;
 
 pub type UtreexoProof = rustreexo::accumulator::proof::Proof<UtreexoNodeHash>;
-
-#[derive(
-    BorshSerialize,
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    Hash,
-    PartialEq,
-    Serialize,
-    ToSchema,
-)]
-pub struct Header {
-    pub merkle_root: MerkleRoot,
-    pub prev_side_hash: Option<BlockHash>,
-    #[borsh(serialize_with = "borsh_serialize::bitcoin_block_hash")]
-    #[schema(value_type = schema::BitcoinBlockHash)]
-    pub prev_main_hash: bitcoin::BlockHash,
-    /// Utreexo roots
-    #[borsh(serialize_with = "borsh_serialize::utreexo_roots")]
-    #[schema(value_type = Vec<schema::UtreexoNodeHash>)]
-    pub roots: Vec<UtreexoNodeHash>,
-}
-
-impl Header {
-    pub fn hash(&self) -> BlockHash {
-        hash(self).into()
-    }
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum WithdrawalBundleEventStatus {
@@ -604,12 +577,6 @@ impl From<semver::Version> for Version {
             patch,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub struct Block {
-    pub header: Header,
-    pub body: Body,
 }
 
 #[cfg(test)]
