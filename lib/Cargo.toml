@@ -15,12 +15,13 @@ tonic-prost-build = { workspace = true }
 [dependencies]
 async-lock = { workspace = true }
 bincode = { workspace = true }
+bip32ish = { workspace = true }
 bitcoin = { workspace = true }
 borsh = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 const-hex = { workspace = true }
-ed25519-dalek = { workspace = true }
+curve25519-dalek = { workspace = true, features = ["group"] }
 educe = { workspace = true, features = ["Clone", "Debug", "Default"] }
 error-fatality = { workspace = true }
 fallible-iterator = { workspace = true }
@@ -28,6 +29,7 @@ futures = { workspace = true, features = ["alloc"] }
 governor = { workspace = true, features = ["quanta", "std"] }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
+hickory-resolver = { workspace = true, features = ["system-config", "tokio"] }
 incrementalmerkletree = { workspace = true }
 jsonrpsee = { workspace = true }
 nonempty = { workspace = true }
@@ -43,22 +45,26 @@ rustls = { workspace = true, features = ["ring"] }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
+smallvec = { workspace = true, features = ["const_generics"] }
 sneed = { workspace = true, features = ["observe"] }
 thiserror = { workspace = true }
 thunder_orchard_types = { path = "../types", features = ["heed", "shardtree"] }
 tiny-bip39 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tokio-stream = { workspace = true, features = ["sync"] }
-tokio-util = { workspace = true, features = ["rt"] }
+tokio-util = { workspace = true, features = ["join-map",  "rt"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 tracing = { workspace = true }
 transitive = { workspace = true }
+url = { workspace = true }
 zip32 = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 bytemuck = { workspace = true }
+rand = { workspace = true, features = ["thread_rng"] }
 temp-dir = { workspace = true }
 
 [features]

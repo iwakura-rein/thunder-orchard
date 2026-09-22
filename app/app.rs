@@ -1,17 +1,25 @@
-use std::{borrow::BorrowMut, collections::HashMap, sync::Arc};
+use std::{
+    borrow::BorrowMut,
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
+use thiserror::Error;
 use thunder_orchard::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, InPoint, OutPoint, Transaction, TransparentAddress,
+        self, Body, Coinbase, InPoint, OutPoint, Transaction,
+        TransparentAddress,
         proto::mainchain::{
             self,
             generated::{
-                mining_service_server, validator_service_server,
-                wallet_service_server,
+                block_producer_service_server, mining_service_server,
+                validator_service_server, wallet_service_server,
             },
         },
         transaction,
@@ -24,11 +32,10 @@ use tonic_health::{
     ServingStatus,
     pb::{HealthCheckRequest, health_client::HealthClient},
 };
-
-use crate::cli::Config;
+use transitive::Transitive;
 
 #[allow(clippy::duplicated_attributes)]
-#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[derive(Debug, Error, Transitive)]
 #[transitive(
     from(thunder_orchard::archive::Error, node::Error),
     from(thunder_orchard::state::Error, node::Error)
@@ -48,8 +55,8 @@ pub enum Error {
     RequestMainchainAncestorInfos { block_hash: bitcoin::BlockHash },
     #[error("Failed to submit transaction")]
     SubmitTransaction(#[from] node::error::SubmitTransaction),
-    #[error("Utreexo error: {0}")]
-    Utreexo(String),
+    #[error(transparent)]
+    Utreexo(thunder_orchard::types::UtreexoError),
     #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
     VerifyMainchainServices {
         url: Box<url::Url>,
@@ -155,6 +162,7 @@ fn update<'a>(
 }
 
 struct ProtoSupport {
+    block_producer: bool,
     miner: bool,
     wallet: bool,
 }
@@ -167,6 +175,20 @@ pub struct BlockTemplate {
     pub body: types::Body,
     /// Fees collected by the transactions in the block
     pub fees: bitcoin::Amount,
+}
+
+#[derive(Debug)]
+pub struct Config {
+    pub add_peers: HashSet<thunder_orchard::types::net::PeerAddress>,
+    pub datadir: PathBuf,
+    pub mainchain_grpc_url: url::Url,
+    pub mnemonic_seed_phrase_path: Option<PathBuf>,
+    pub net_addr: SocketAddr,
+    pub network: thunder_orchard::types::Network,
+    pub network_magic_override:
+        Option<thunder_orchard::net::peer_message::MagicBytes>,
+    pub server_names: HashSet<String>,
+    pub wallet_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -234,6 +256,8 @@ impl App {
     ) -> Result<ProtoSupport, tonic::Status> {
         let mut client = HealthClient::new(transport);
 
+        let block_producer_service_name =
+            block_producer_service_server::SERVICE_NAME;
         let mining_service_name = mining_service_server::SERVICE_NAME;
         let validator_service_name = validator_service_server::SERVICE_NAME;
         let wallet_service_name = wallet_service_server::SERVICE_NAME;
@@ -249,7 +273,12 @@ impl App {
 
         tracing::info!("Verified existence of {}", validator_service_name);
 
-        // The mining and wallet services are optional.
+        // The block producer, mining and wallet services are optional.
+        let has_block_producer_service = Self::check_status_serving(
+            &mut client,
+            block_producer_service_name,
+        )
+        .await?;
         let has_mining_service =
             Self::check_status_serving(&mut client, mining_service_name)
                 .await?;
@@ -258,32 +287,31 @@ impl App {
                 .await?;
 
         tracing::info!(
+            %has_block_producer_service,
             %has_mining_service,
             %has_wallet_service,
-            "Checked existence of {}, {}",
+            "Checked existence of {}, {}, {}",
+            block_producer_service_name,
             mining_service_name,
             wallet_service_name,
         );
         let res = ProtoSupport {
+            block_producer: has_block_producer_service,
             miner: has_mining_service,
             wallet: has_wallet_service,
         };
         Ok(res)
     }
 
-    pub fn new(config: &Config) -> Result<Self, Error> {
+    pub fn new(config: Config) -> Result<Self, Error> {
+        let mut rng = rand::rng();
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
 
-        tracing::info!(
-            "Instantiating wallet with data directory: {}",
-            config.datadir.display()
-        );
-
-        let wallet = Wallet::new(&config.datadir.join("wallet.mdb"))?;
+        let wallet = Wallet::new(&config.wallet_dir.join("wallet.mdb"))?;
         if let Some(seed_phrase_path) = &config.mnemonic_seed_phrase_path {
             let mnemonic = std::fs::read_to_string(seed_phrase_path)?;
             let () = wallet.set_seed_from_mnemonic(mnemonic.as_str())?;
@@ -300,8 +328,17 @@ impl App {
         .unwrap()
         .concurrency_limit(256)
         .connect_lazy();
-        let (cusf_mainchain, cusf_mainchain_miner, cusf_mainchain_wallet) = {
-            let ProtoSupport { miner, wallet } = runtime
+        let (
+            cusf_mainchain,
+            cusf_mainchain_miner,
+            cusf_mainchain_wallet,
+            cusf_mainchain_block_producer,
+        ) = {
+            let ProtoSupport {
+                block_producer,
+                miner,
+                wallet,
+            } = runtime
                 .block_on(Self::check_proto_support(transport.clone()))
                 .map_err(|err| Error::VerifyMainchainServices {
                     url: Box::new(config.mainchain_grpc_url.clone()),
@@ -317,8 +354,18 @@ impl App {
             } else {
                 None
             };
+            let block_producer_client = if block_producer {
+                Some(mainchain::BlockProducerClient::new(transport.clone()))
+            } else {
+                None
+            };
             let validator_client = mainchain::ValidatorClient::new(transport);
-            (validator_client, mining_client, wallet_client)
+            (
+                validator_client,
+                mining_client,
+                wallet_client,
+                block_producer_client,
+            )
         };
         let miner = cusf_mainchain_wallet.clone().map(|wallet| {
             Miner::new(
@@ -331,12 +378,17 @@ impl App {
 
         tracing::debug!("Instantiating node struct");
         let node = Node::new(
-            &config.datadir,
-            config.net_addr,
+            thunder_orchard::node::Config {
+                add_peers: config.add_peers,
+                bind_addr: config.net_addr,
+                datadir: config.datadir,
+                magic_bytes_override: config.network_magic_override,
+                network: config.network,
+                server_names: config.server_names,
+            },
             cusf_mainchain,
-            cusf_mainchain_wallet,
-            config.network_magic_override,
-            config.network,
+            cusf_mainchain_block_producer,
+            &mut rng,
             &runtime,
         )?;
         let node = Arc::new(node);
@@ -364,12 +416,16 @@ impl App {
     ) -> Result<Transaction, Error> {
         let wallet_rotxn =
             self.wallet.env().read_txn().map_err(wallet::Error::from)?;
-        let tx = self.wallet.authorize_orchard_bundle(&wallet_rotxn, tx)?;
+        let tx = self.wallet.authorize_orchard_bundle(
+            rand::rng(),
+            &wallet_rotxn,
+            tx,
+        )?;
         Ok(tx)
     }
 
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
-        let authorized_transaction = self.wallet.authorize(tx)?;
+        let authorized_transaction = self.wallet.authorize(rand::rng(), tx)?;
         let mut wallet_rwtxn =
             self.wallet.env().write_txn().map_err(wallet::Error::from)?;
         let txid = authorized_transaction.transaction.txid();
@@ -537,24 +593,31 @@ impl App {
             const NUM_TRANSACTIONS: usize = 1000;
             let (txs, tx_fees) =
                 self.node.get_transactions(NUM_TRANSACTIONS)?;
-            let coinbase = match tx_fees {
-                bitcoin::Amount::ZERO => Vec::new(),
-                tx_fees => {
-                    let address = (|| {
-                        let mut rwtxn = self.wallet.env().write_txn()?;
-                        let res = self
-                            .wallet
-                            .get_new_transparent_address(&mut rwtxn)?;
-                        rwtxn.commit()?;
-                        Ok::<_, thunder_orchard::wallet::Error>(res)
-                    })()?;
-                    vec![types::Output {
-                        address,
-                        content: types::OutputContent::Value(tx_fees),
-                    }]
+            let coinbase = {
+                let outputs = match tx_fees {
+                    bitcoin::Amount::ZERO => Vec::new(),
+                    tx_fees => {
+                        let address = (|| {
+                            let mut rwtxn = self.wallet.env().write_txn()?;
+                            let res = self
+                                .wallet
+                                .get_new_transparent_address(&mut rwtxn)?;
+                            rwtxn.commit()?;
+                            Ok::<_, thunder_orchard::wallet::Error>(res)
+                        })()?;
+                        vec![types::Output {
+                            address,
+                            content: types::OutputContent::Value(tx_fees),
+                        }]
+                    }
+                };
+                Coinbase {
+                    memo: Vec::new(),
+                    outputs: outputs.into(),
                 }
             };
             let body = types::Body::new(txs, coinbase);
+            let merkle_root = body.compute_merkle_root();
             let roots = {
                 let mut accumulator = {
                     let rotxn = self
@@ -567,8 +630,18 @@ impl App {
                         .get_accumulator(&rotxn, &tip_hash)
                         .map_err(node::Error::from)?
                 };
-                body.modify_memforest(&mut accumulator.0)
-                    .map_err(Error::Utreexo)?;
+                let coinbase_txid = Coinbase::compute_txid(
+                    &merkle_root,
+                    &prev_main_hash,
+                    prev_side_hash.as_ref(),
+                );
+                let () = Body::modify_memforest(
+                    coinbase_txid,
+                    &body.coinbase.outputs.0,
+                    &body.transactions,
+                    &mut accumulator.0,
+                )
+                .map_err(Error::Utreexo)?;
                 accumulator
                     .0
                     .get_roots()
@@ -591,7 +664,7 @@ impl App {
             });
             (bribe, header, body, tx_fees)
         } else {
-            let coinbase = Vec::new();
+            let coinbase = Coinbase::default();
             let body = types::Body::new(Vec::new(), coinbase);
             let roots = {
                 let accumulator = {

@@ -1,8 +1,10 @@
+use std::path::PathBuf;
+
 use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
 use thiserror::Error;
 use transitive::Transitive;
 
-use crate::types::{Txid, UtreexoError};
+use crate::types::{Txid, UtreexoError, Version};
 
 #[derive(Debug, Error)]
 pub enum TxRejected {
@@ -80,6 +82,12 @@ pub enum Error {
     DbEnv(#[from] Box<env::Error>),
     #[error("Database write error")]
     DbWrite(#[from] rwtxn::Error),
+    #[error(
+        "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
+        .version,
+        .db_path.display()
+    )]
+    IncompatibleVersion { version: Version, db_path: PathBuf },
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
 }

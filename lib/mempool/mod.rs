@@ -35,9 +35,23 @@ impl MemPool {
             DatabaseUnique::create(env, &mut rwtxn, "used_nullifiers")?;
         let version =
             DatabaseUnique::create(env, &mut rwtxn, "mempool_version")?;
-        if version.try_get(&rwtxn, &())?.is_none() {
-            version.put(&mut rwtxn, &(), &*VERSION)?;
-        }
+        match version.try_get(&rwtxn, &())? {
+            Some(db_version)
+                if db_version
+                    < Version {
+                        major: 0,
+                        minor: 18,
+                        patch: 0,
+                    } =>
+            {
+                return Err(Error::IncompatibleVersion {
+                    version: db_version,
+                    db_path: env.path().to_path_buf(),
+                });
+            }
+            Some(_) => (),
+            None => version.put(&mut rwtxn, &(), &*VERSION)?,
+        };
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             transactions,

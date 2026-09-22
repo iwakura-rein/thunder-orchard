@@ -13,6 +13,7 @@
 use bitcoin::hashes::Hash as _;
 use bytemuck::TransparentWrapper as _;
 use incrementalmerkletree::{Hashable, Level};
+use rand::SeedableRng;
 use sneed::RoTxn;
 
 use crate::{
@@ -22,9 +23,11 @@ use crate::{
         test::fresh_state,
     },
     types::{
-        AccumulatorDiff, AuthorizedTransaction, Body, Header, OutPoint, Output,
-        OutputContent, PointedOutput, Transaction, TransparentAddress,
-        UtreexoNodeHash, UtreexoProof, authorization, orchard as o,
+        AccumulatorDiff, AuthorizedTransaction, BlockHash, Body, Coinbase,
+        Header, OutPoint, Output, OutputContent, PointedOutput, Transaction,
+        TransparentAddress, UtreexoNodeHash, UtreexoProof,
+        authorization::{self, BatchVerificationContext},
+        orchard as o,
     },
 };
 
@@ -105,10 +108,14 @@ fn forge_spend() -> (
 
 /// Build the attacker's unshielding transaction: spend the forged note,
 /// value_balance = +FORGED_SATS, and emit a transparent UTXO of that value.
-fn build_attack_tx(
+fn build_attack_tx<R>(
+    mut rng: R,
     attacker_addr: TransparentAddress,
     empty_utreexo_proof: UtreexoProof,
-) -> AuthorizedTransaction {
+) -> AuthorizedTransaction
+where
+    R: o::CryptoRng,
+{
     let (fvk, sk, note, path, anchor) = forge_spend();
 
     let flags = o::BundleFlags::ENABLED;
@@ -130,23 +137,24 @@ fn build_attack_tx(
         .expect("add_output");
 
     let (bundle, _meta) = builder
-        .build(rand::rngs::OsRng, Some(ovk))
+        .build(&mut rng, Some(ovk))
         .expect("build")
         .expect("non-empty bundle");
-    let bundle = bundle.create_proof(rand::rngs::OsRng).expect("prove");
+    let bundle = bundle.create_proof(&mut rng).expect("prove");
 
     let outputs = vec![Output {
         address: attacker_addr,
         content: OutputContent::Value(bitcoin::Amount::from_sat(FORGED_SATS)),
-    }];
+    }]
+    .into();
     let tx = Transaction {
-        inputs: Vec::new(),
+        inputs: Vec::new().into(),
         proof: empty_utreexo_proof,
         outputs,
         orchard_bundle: Some(bundle),
     };
     let spend_auth_key = orchard::keys::SpendAuthorizingKey::from(&sk);
-    let tx = authorization::sign_orchard(&[spend_auth_key], tx)
+    let tx = authorization::sign_orchard(rng, &[spend_auth_key], tx)
         .expect("sign_orchard");
 
     // No transparent inputs -> no ed25519 authorizations needed.
@@ -160,14 +168,18 @@ fn build_attack_tx(
 fn expected_roots(
     state: &State,
     rotxn: &RoTxn,
+    prev_main_hash: &bitcoin::BlockHash,
+    prev_side_hash: Option<&BlockHash>,
     body: &Body,
 ) -> Vec<UtreexoNodeHash> {
     let mut acc = state.get_accumulator(rotxn).unwrap();
     let mut diff = AccumulatorDiff::default();
     let merkle_root = body.compute_merkle_root();
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    let coinbase_txid =
+        Coinbase::compute_txid(&merkle_root, prev_main_hash, prev_side_hash);
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         diff.insert(
@@ -203,22 +215,24 @@ fn expected_roots(
 
 #[test]
 fn forged_anchor_rejected_in_block() -> anyhow::Result<()> {
+    let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
     let (_temp_dir, env, state) =
         fresh_state("forged_anchor_rejected_in_block")?;
 
+    let batch_verification_ctxt = BatchVerificationContext::new(&mut rng);
     let attacker_addr = TransparentAddress([0x11; 20]);
     let empty_proof = {
         let rotxn = env.read_txn()?;
         state.get_utreexo_proof(&rotxn, std::iter::empty::<&PointedOutput>())?
     };
 
-    let auth_tx = build_attack_tx(attacker_addr, empty_proof);
+    let auth_tx = build_attack_tx(rng, attacker_addr, empty_proof);
 
     // Mempool path must reject the forged anchor.
     {
         let rotxn = env.read_txn()?;
         let err = state
-            .validate_transaction(&rotxn, &auth_tx)
+            .validate_transaction(&rotxn, &batch_verification_ctxt, &auth_tx)
             .expect_err("mempool must reject forged anchor");
         anyhow::ensure!(matches!(
             err,
@@ -230,20 +244,30 @@ fn forged_anchor_rejected_in_block() -> anyhow::Result<()> {
 
     // Block-validation path must reject the same transaction. Before the fix,
     // `validate_block` accepted it and minted FORGED_SATS out of nothing.
-    let body = Body::new(vec![auth_tx], Vec::new());
+    let body = Body::new(vec![auth_tx], Coinbase::default());
     let header = {
         let rotxn = env.read_txn().unwrap();
+        let prev_main_hash = bitcoin::BlockHash::from_byte_array([0u8; 32]);
+        // None at genesis
+        let prev_side_hash = state.try_get_tip(&rotxn).unwrap();
+        let roots = expected_roots(
+            &state,
+            &rotxn,
+            &prev_main_hash,
+            prev_side_hash.as_ref(),
+            &body,
+        );
         Header {
             merkle_root: body.compute_merkle_root(),
-            prev_side_hash: state.try_get_tip(&rotxn).unwrap(), // None at genesis
-            prev_main_hash: bitcoin::BlockHash::from_byte_array([0u8; 32]),
-            roots: expected_roots(&state, &rotxn, &body),
+            prev_main_hash,
+            prev_side_hash,
+            roots,
         }
     };
     {
         let rotxn = env.read_txn()?;
         let err = state
-            .validate_block(&rotxn, &header, &body)
+            .validate_block(&rotxn, &batch_verification_ctxt, &header, &body)
             .expect_err("block path must reject forged anchor");
         anyhow::ensure!(matches!(
             err,

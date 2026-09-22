@@ -2,15 +2,17 @@
 
 use std::borrow::Cow;
 
-use rayon::prelude::*;
+use rayon::prelude::ParallelSliceMut as _;
 use sneed::{RoTxn, RwTxn};
 
 use crate::{
     state::{Error, PrevalidatedBlock, State, error},
     types::{
-        Accumulator, AccumulatorDiff, AmountOverflowError, Authorization, Body,
-        GetValue as _, Header, InPoint, OutPoint, OutPointKey, Output,
-        PointedOutput, SpentOutput, Transaction, UtreexoNodeHash, orchard,
+        Accumulator, AccumulatorDiff, AmountOverflowError, Body, GetValue as _,
+        Header, InPoint, OutPoint, OutPointKey, Output, PointedOutput,
+        SpentOutput, Transaction, UtreexoNodeHash,
+        authorization::{self, BatchVerificationContext},
+        orchard,
     },
 };
 
@@ -20,6 +22,7 @@ fn calculate_total_inputs(body: &Body) -> usize {
 }
 
 pub fn validate(
+    batch_verification_context: &BatchVerificationContext,
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
@@ -42,6 +45,7 @@ pub fn validate(
     if body_size > State::body_size_limit(height) {
         return Err(Error::BodyTooLarge);
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state.utreexo_accumulator.get(rotxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
@@ -53,12 +57,12 @@ pub fn validate(
         };
         return Err(Error::InvalidBody(err));
     }
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -161,9 +165,8 @@ pub fn validate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if Authorization::verify_body(body).is_err() {
-        return Err(Error::AuthorizationError);
-    }
+    let () =
+        authorization::verify_authorizations(batch_verification_context, body)?;
     let () = accumulator.apply_diff(accumulator_diff)?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
@@ -173,6 +176,7 @@ pub fn validate(
 }
 
 pub fn prevalidate(
+    batch_verification_ctxt: &BatchVerificationContext,
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
@@ -206,12 +210,13 @@ pub fn prevalidate(
         };
         return Err(Error::InvalidBody(err));
     }
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    let coinbase_txid = header.compute_coinbase_txid();
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -314,9 +319,8 @@ pub fn prevalidate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if Authorization::verify_body(body).is_err() {
-        return Err(Error::AuthorizationError);
-    }
+    let () =
+        authorization::verify_authorizations(batch_verification_ctxt, body)?;
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
@@ -339,7 +343,7 @@ pub fn connect_prevalidated(
     body: &Body,
     prevalidated: PrevalidatedBlock,
 ) -> Result<Option<orchard::Frontier>, error::ConnectBlock> {
-    let merkle_root = prevalidated.computed_merkle_root;
+    let coinbase_txid = header.compute_coinbase_txid();
 
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let accumulator_diff = prevalidated.accumulator_diff;
@@ -357,9 +361,9 @@ pub fn connect_prevalidated(
     let mut utxo_puts: Vec<(OutPointKey, Output)> = Vec::new();
 
     // Collect coinbase UTXOs
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let key = OutPointKey::from(outpoint);
@@ -548,6 +552,7 @@ pub fn connect(
         };
         return Err(err.into());
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut frontier = state
@@ -555,9 +560,9 @@ pub fn connect(
         .frontier()
         .get(rwtxn, &())
         .map_err(error::Orchard::from)?;
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -677,10 +682,11 @@ pub fn disconnect_tip(
     prev_note_commitments_merkle_frontier: Option<&orchard::Frontier>,
 ) -> Result<(), Error> {
     let tip_hash = state.tip.try_get(rwtxn, &())?.ok_or(Error::NoTip)?;
-    if tip_hash != header.hash() {
+    let block_hash = header.hash();
+    if tip_hash != block_hash {
         let err = error::InvalidHeader::BlockHash {
             expected: tip_hash,
-            computed: header.hash(),
+            computed: block_hash,
         };
         return Err(Error::InvalidHeader(err));
     }
@@ -692,6 +698,7 @@ pub fn disconnect_tip(
         };
         return Err(Error::InvalidBody(err));
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     tracing::debug!("Got acc");
     let mut accumulator_diff = AccumulatorDiff::default();
@@ -701,12 +708,13 @@ pub fn disconnect_tip(
     })?;
     // delete coinbase UTXOs, last-to-first
     body.coinbase
+        .outputs
         .iter()
         .enumerate()
         .rev()
         .try_for_each(|(vout, output)| {
             let outpoint = OutPoint::Coinbase {
-                merkle_root,
+                txid: coinbase_txid,
                 vout: vout as u32,
             };
             let pointed_output = PointedOutput {
@@ -751,26 +759,32 @@ pub fn disconnect_tip(
 mod test {
     use std::borrow::Cow;
 
-    use crate::state::test::{fresh_state, value_output};
+    use bitcoin::hashes::Hash as _;
+
+    use crate::{
+        state::test::{fresh_state, value_output},
+        types::{
+            Accumulator, AccumulatorDiff, Body, Coinbase, Header, OutPoint,
+            OutPointKey, PointedOutput, Transaction, UtreexoNodeHash,
+            authorization::{
+                self, BatchVerificationContext, SigningKey, get_address,
+            },
+            hash,
+        },
+    };
 
     #[test]
     fn validation_rejects_outpoint_utxo_hash_mismatch() -> anyhow::Result<()> {
-        use bitcoin::hashes::Hash as _;
-
-        use crate::types::{
-            Accumulator, AccumulatorDiff, Body, Header, OutPoint, OutPointKey,
-            PointedOutput, Transaction, UtreexoNodeHash,
-            authorization::{SigningKey, authorize, get_address},
-            hash,
-        };
         let (_temp_dir, env, state) =
             fresh_state("validation_rejects_outpoint_utxo_hash_mismatch")?;
+        let mut rng = rand::rng();
+        let batch_verification_ctxt = BatchVerificationContext::new(&mut rng);
 
         // Attacker key (owns A). Victim key (owns B).
-        let attacker = SigningKey::from_bytes(&[0x11; 32]);
-        let attacker_addr = get_address(&attacker.verifying_key());
-        let victim = SigningKey::from_bytes(&[0x22; 32]);
-        let victim_addr = get_address(&victim.verifying_key());
+        let attacker = SigningKey::new(&mut rng);
+        let attacker_addr = get_address((&attacker).into());
+        let victim = SigningKey::new(&mut rng);
+        let victim_addr = get_address(victim.into());
 
         // UTXO A (attacker, 10_000) and victim UTXO B (20_000).
         let outpoint_a = OutPoint::Deposit(bitcoin::OutPoint {
@@ -835,16 +849,20 @@ mod test {
         let proof_for_b = pre_accumulator.prove(&[leaf_b])?;
         let output_c = value_output(attacker_addr, 9_000);
         let tx = Transaction {
-            inputs: vec![(outpoint_a, hash_b)],
+            inputs: vec![(outpoint_a, hash_b)].into(),
             proof: proof_for_b,
-            outputs: vec![output_c.clone()],
+            outputs: vec![output_c.clone()].into(),
             orchard_bundle: None,
         };
         // Sign with A's key (the spender of outpoint A authorizes the tx).
-        let authorized = authorize(&[(attacker_addr, &attacker)], tx)?;
+        let authorized = authorization::authorize(
+            &mut rng,
+            &[(attacker_addr, &attacker)],
+            tx,
+        )?;
 
         // Assemble body.
-        let body = Body::new(vec![authorized], Vec::new());
+        let body = Body::new(vec![authorized], Coinbase::default());
 
         // Compute the header the validator expects:
         //   merkle_root from the filled tx, roots = post-block accumulator
@@ -885,7 +903,14 @@ mod test {
         {
             let rotxn = env.read_txn()?;
             anyhow::ensure!(
-                state.validate_block(&rotxn, &header, &body).is_err(),
+                state
+                    .validate_block(
+                        &rotxn,
+                        &batch_verification_ctxt,
+                        &header,
+                        &body
+                    )
+                    .is_err(),
                 "BUG: real validate_block accepts an input whose outpoint (A) \
                 and utxo_hash (B) refer to different UTXOs",
             );

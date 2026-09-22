@@ -1,7 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
-    path::PathBuf,
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
 };
 
 use bitcoin::{self, hashes::Hash as _};
@@ -9,71 +8,21 @@ use fallible_iterator::{FallibleIterator, IteratorExt};
 use heed::types::SerdeBincode;
 use sneed::{
     DatabaseUnique, DbError, EnvError, RoDatabaseUnique, RoTxn, RwTxn,
-    RwTxnError, UnitKey, db, env,
+    RwTxnError, UnitKey,
 };
 
 use crate::types::{
     Accumulator, BlockHash, BmmResult, Body, Header, Tip, Txid, VERSION,
-    Version, orchard, proto::mainchain,
+    Version, orchard,
+    proto::mainchain::{self, BlockHeaderInfo},
 };
 
-#[allow(clippy::duplicated_attributes)]
-#[derive(Debug, thiserror::Error, transitive::Transitive)]
-#[transitive(
-    from(db::error::Delete, DbError),
-    from(db::error::Get, DbError),
-    from(db::error::Put, DbError),
-    from(db::error::TryGet, DbError),
-    from(env::error::CreateDb, EnvError),
-    from(env::error::WriteTxn, EnvError)
-)]
-pub enum Error {
-    #[error(transparent)]
-    Db(#[from] DbError),
-    #[error("Database env error")]
-    DbEnv(#[from] EnvError),
-    #[error("Database write error")]
-    DbWrite(#[from] RwTxnError),
-    #[error(
-        "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
-        .version,
-        .db_path.display()
-    )]
-    IncompatibleVersion { version: Version, db_path: PathBuf },
-    #[error("invalid merkle root")]
-    InvalidMerkleRoot,
-    #[error("invalid previous side hash")]
-    InvalidPrevSideHash,
-    #[error("no accumulator for block {0}")]
-    NoAccumulator(BlockHash),
-    #[error("no ancestor with depth {depth} for block {block_hash}")]
-    NoAncestor { block_hash: BlockHash, depth: u32 },
-    #[error("no mainchain ancestor with depth {depth} for block {block_hash}")]
-    NoMainAncestor {
-        block_hash: bitcoin::BlockHash,
-        depth: u32,
-    },
-    #[error("unknown block hash: {0}")]
-    NoBlockHash(BlockHash),
-    #[error("no BMM result with block {0}")]
-    NoBmmResult(BlockHash),
-    #[error("no block body with hash {0}")]
-    NoBody(BlockHash),
-    #[error("no deposits info for block {0}")]
-    NoDepositsInfo(bitcoin::BlockHash),
-    #[error("no header with hash {0}")]
-    NoHeader(BlockHash),
-    #[error("no height info for block hash {0}")]
-    NoHeight(BlockHash),
-    #[error("unknown mainchain block hash: {0}")]
-    NoMainBlockHash(bitcoin::BlockHash),
-    #[error("no mainchain block info for block hash {0}")]
-    NoMainBlockInfo(bitcoin::BlockHash),
-    #[error("no mainchain header info for block hash {0}")]
-    NoMainHeaderInfo(bitcoin::BlockHash),
-    #[error("no height info for mainchain block hash {0}")]
-    NoMainHeight(bitcoin::BlockHash),
-}
+pub mod error;
+pub use error::Error;
+pub mod iter;
+pub use iter::{AncestorHeaders, Ancestors};
+pub mod side_tips;
+pub use side_tips::SideTips;
 
 #[derive(Clone)]
 pub struct Archive {
@@ -150,6 +99,8 @@ pub struct Archive {
         SerdeBincode<Option<BlockHash>>,
         SerdeBincode<orchard::Frontier>,
     >,
+    /// Sidechain tips that can be re-orged to as of best known mainchain tip
+    side_tips: SideTips,
     /// Successor blocks. ALL known block hashes MUST be present.
     successors: DatabaseUnique<
         SerdeBincode<Option<BlockHash>>,
@@ -170,35 +121,29 @@ pub struct Archive {
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 17;
+    pub const NUM_DBS: u32 = SideTips::NUM_DBS + 17;
 
     pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn()?;
         let version =
             DatabaseUnique::create(env, &mut rwtxn, "archive_version")
                 .map_err(EnvError::from)?;
-        match version.try_get(&rwtxn, &()).map_err(DbError::from)? {
+        match version.try_get(&rwtxn, &())? {
             Some(db_version)
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 16,
+                        minor: 18,
                         patch: 0,
                     } =>
             {
-                // `txid_to_inclusions` added in 0.16.0
-                // Merkle root structure changed in 0.13.0
-                // `deposits` and `main_bmm_commitments` were removed in
-                // 0.12.0, and `main_block_infos` was added
                 return Err(Error::IncompatibleVersion {
                     version: db_version,
                     db_path: env.path().to_path_buf(),
                 });
             }
             Some(_) => (),
-            None => version
-                .put(&mut rwtxn, &(), &*VERSION)
-                .map_err(DbError::from)?,
+            None => version.put(&mut rwtxn, &(), &*VERSION)?,
         }
         let accumulators =
             DatabaseUnique::create(env, &mut rwtxn, "accumulators")?;
@@ -247,6 +192,8 @@ impl Archive {
                 &orchard::Frontier::empty(),
             )?;
         }
+        let side_tips = SideTips::create(env, &mut rwtxn)
+            .map_err(side_tips::Error::from)?;
         let successors = DatabaseUnique::create(env, &mut rwtxn, "successors")?;
         if successors.try_get(&rwtxn, &None)?.is_none() {
             successors.put(&mut rwtxn, &None, &HashSet::new())?;
@@ -269,6 +216,7 @@ impl Archive {
             main_header_infos,
             main_successors,
             orchard_frontiers,
+            side_tips,
             successors,
             total_work,
             txid_to_inclusions,
@@ -283,6 +231,10 @@ impl Archive {
         SerdeBincode<orchard::Frontier>,
     > {
         &self.orchard_frontiers
+    }
+
+    pub fn side_tips(&self) -> &SideTips {
+        &self.side_tips
     }
 
     pub fn try_get_accumulator(
@@ -354,6 +306,15 @@ impl Archive {
             .ok_or(Error::NoBmmResult(block_hash))
     }
 
+    pub fn contains_body(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: &BlockHash,
+    ) -> Result<bool, Error> {
+        let res = self.bodies.contains_key(rotxn, block_hash)?;
+        Ok(res)
+    }
+
     pub fn try_get_body(
         &self,
         rotxn: &RoTxn,
@@ -423,13 +384,9 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
     ) -> Result<Option<u32>, Error> {
-        if block_hash == bitcoin::BlockHash::all_zeros() {
-            Ok(Some(0))
-        } else {
-            self.main_block_hash_to_height
-                .try_get(rotxn, &block_hash)
-                .map_err(|err| DbError::from(err).into())
-        }
+        self.main_block_hash_to_height
+            .try_get(rotxn, &block_hash)
+            .map_err(|err| DbError::from(err).into())
     }
 
     pub fn get_main_height(
@@ -450,7 +407,7 @@ impl Archive {
         Ok(header_info)
     }
 
-    fn get_main_header_info(
+    pub fn get_main_header_info(
         &self,
         rotxn: &RoTxn,
         block_hash: &bitcoin::BlockHash,
@@ -715,7 +672,7 @@ impl Archive {
         block_hash: BlockHash,
         body: &Body,
     ) -> Result<(), Error> {
-        let _header = self.get_header(rwtxn, block_hash)?;
+        let header = self.get_header(rwtxn, block_hash)?;
         self.bodies
             .put(rwtxn, &block_hash, body)
             .map_err(DbError::from)?;
@@ -727,8 +684,73 @@ impl Archive {
                 let mut inclusions = self.get_tx_inclusions(rwtxn, txid)?;
                 inclusions.insert(block_hash, txin as u32);
                 self.txid_to_inclusions.put(rwtxn, &txid, &inclusions)?;
-                Ok(())
-            })
+                Ok::<_, Error>(())
+            })?;
+        let mainchain_tip = self
+            .side_tips
+            .get_mainchain_tip(rwtxn)
+            .map_err(side_tips::Error::from)?;
+        // update side tips for a single sidechain block
+        let update_side_tips = |rwtxn: &mut RwTxn<'_>,
+                                block_hash,
+                                header: &Header,
+                                queue: &mut VecDeque<_>|
+         -> Result<(), Error> {
+            let mut connected_sidechain_tip = false;
+            for (main_block_hash, bmm_result) in
+                self.get_bmm_results(rwtxn, block_hash)?
+            {
+                match bmm_result {
+                    BmmResult::Verified => (),
+                    BmmResult::Failed => continue,
+                }
+                if let Some(side_parent) = header.prev_side_hash
+                    && !self
+                        .side_tips
+                        .sidechain_tips()
+                        .contains_key(rwtxn, &side_parent)
+                        .map_err(side_tips::Error::from)?
+                {
+                    continue;
+                }
+                if !self.is_main_descendant(
+                    rwtxn,
+                    main_block_hash,
+                    mainchain_tip.block_hash(),
+                )? {
+                    continue;
+                }
+                let cumulative_work =
+                    self.get_total_work(rwtxn, main_block_hash)?;
+                let () = self
+                    .side_tips
+                    .connect_sidechain_tip(
+                        rwtxn,
+                        main_block_hash,
+                        cumulative_work,
+                        block_hash,
+                        header.into(),
+                    )
+                    .map_err(side_tips::Error::from)?;
+                connected_sidechain_tip = true;
+            }
+            if connected_sidechain_tip {
+                let successors =
+                    self.get_successors(rwtxn, Some(block_hash))?;
+                queue.extend(successors);
+            }
+            Ok(())
+        };
+        let mut queue = VecDeque::new();
+        let () = update_side_tips(rwtxn, block_hash, &header, &mut queue)?;
+        'update_side_tips: while let Some(block_hash) = queue.pop_front() {
+            if !self.contains_body(rwtxn, &block_hash)? {
+                continue 'update_side_tips;
+            }
+            let header = self.get_header(rwtxn, block_hash)?;
+            let () = update_side_tips(rwtxn, block_hash, &header, &mut queue)?;
+        }
+        Ok(())
     }
 
     /// Delete a stored body, reversing the effects of [`Self::put_body`].
@@ -753,8 +775,25 @@ impl Archive {
             } else {
                 self.txid_to_inclusions.put(rwtxn, &txid, &inclusions)?;
             }
-            Ok(())
-        })
+            Ok::<_, Error>(())
+        })?;
+        let mut queue = VecDeque::from_iter([block_hash]);
+        'update_side_tips: while let Some(block_hash) = queue.pop_front() {
+            if !self
+                .side_tips
+                .sidechain_tips()
+                .contains_key(rwtxn, &block_hash)?
+            {
+                continue 'update_side_tips;
+            };
+            // SAFETY: this loop also disconnects descendants
+            let () = unsafe {
+                self.side_tips.disconnect_sidechain_tip(rwtxn, &block_hash)
+            }?;
+            let successors = self.get_successors(rwtxn, Some(block_hash))?;
+            queue.extend(successors);
+        }
+        Ok(())
     }
 
     /// Invalidate a block.
@@ -1017,9 +1056,14 @@ impl Archive {
             return Err(Error::NoMainHeaderInfo(header_info.prev_block_hash));
         }
         let block_hash = header_info.block_hash;
-        let prev_height =
-            self.get_main_height(rwtxn, header_info.prev_block_hash)?;
-        let height = prev_height + 1;
+        let height =
+            if header_info.prev_block_hash == bitcoin::BlockHash::all_zeros() {
+                0
+            } else {
+                let prev_height =
+                    self.get_main_height(rwtxn, header_info.prev_block_hash)?;
+                prev_height + 1
+            };
         let total_work =
             if header_info.prev_block_hash != bitcoin::BlockHash::all_zeros() {
                 let prev_work =
@@ -1151,14 +1195,49 @@ impl Archive {
         block_hash: BlockHash,
         start_height: u32,
     ) -> impl FallibleIterator<Item = BlockHash, Error = Error> + 'a {
-        AncestorsRev::new(self, rotxn, block_hash, start_height).filter_map(
-            |(ancestor, _)| {
+        iter::AncestorsRev::new(self, rotxn, block_hash, start_height)
+            .filter_map(|(ancestor, _)| {
                 if self.try_get_body(rotxn, ancestor)?.is_none() {
                     Ok(Some(ancestor))
                 } else {
                     Ok(None)
                 }
-            },
+            })
+    }
+
+    /// Return a fallible iterator over ancestors of a mainchain block,
+    /// starting with the specified block's header
+    pub fn main_ancestor_header_infos<'a>(
+        &'a self,
+        rotxn: &'a RoTxn,
+        mut block_hash: bitcoin::BlockHash,
+    ) -> impl FallibleIterator<Item = BlockHeaderInfo, Error = Error> + 'a {
+        fallible_iterator::from_fn(move || {
+            if block_hash == bitcoin::BlockHash::all_zeros() {
+                Ok(None)
+            } else {
+                let header_info =
+                    self.get_main_header_info(rotxn, &block_hash)?;
+                block_hash = header_info.prev_block_hash;
+                Ok(Some(header_info))
+            }
+        })
+    }
+
+    /// Return a fallible iterator over ancestors of a mainchain block,
+    /// ending with the specified block's header, and starting with the
+    /// ancestor at the specified height.
+    pub fn main_ancestor_header_infos_rev<'a, 'rotxn>(
+        &'a self,
+        rotxn: &'a RoTxn<'rotxn>,
+        end_block_hash: bitcoin::BlockHash,
+        start_height: u32,
+    ) -> impl FallibleIterator<Item = BlockHeaderInfo, Error = Error> + 'a {
+        iter::MainchainAncestorsRev::new(
+            self,
+            rotxn,
+            end_block_hash,
+            start_height,
         )
     }
 
@@ -1167,20 +1246,11 @@ impl Archive {
     pub fn main_ancestors<'a>(
         &'a self,
         rotxn: &'a RoTxn,
-        mut block_hash: bitcoin::BlockHash,
+        block_hash: bitcoin::BlockHash,
     ) -> impl FallibleIterator<Item = bitcoin::BlockHash, Error = Error> + 'a
     {
-        fallible_iterator::from_fn(move || {
-            if block_hash == bitcoin::BlockHash::all_zeros() {
-                Ok(None)
-            } else {
-                let res = Some(block_hash);
-                let header_info =
-                    self.get_main_header_info(rotxn, &block_hash)?;
-                block_hash = header_info.prev_block_hash;
-                Ok(res)
-            }
-        })
+        self.main_ancestor_header_infos(rotxn, block_hash)
+            .map(|info| Ok(info.block_hash))
     }
 
     /// Find the last common ancestor of two blocks, if headers for both exist
@@ -1584,149 +1654,14 @@ impl Archive {
     }
 }
 
-/// Return a fallible iterator over ancestor headers of a block,
-/// starting with the specified block.
-/// created by [`Archive::ancestor_headers`]
-pub struct AncestorHeaders<'a, 'rotxn> {
-    archive: &'a Archive,
-    rotxn: &'a RoTxn<'rotxn>,
-    block_hash: Option<BlockHash>,
-}
-
-impl FallibleIterator for AncestorHeaders<'_, '_> {
-    type Item = (BlockHash, Header);
-    type Error = Error;
-
-    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
-        match self.block_hash {
-            None => Ok(None),
-            Some(block_hash) => {
-                let header = self.archive.get_header(self.rotxn, block_hash)?;
-                self.block_hash = header.prev_side_hash;
-                Ok(Some((block_hash, header)))
-            }
-        }
-    }
-}
-
-/// Return a fallible iterator over ancestors of a block,
-/// starting with the specified block.
-/// created by [`Archive::ancestors`]
-#[repr(transparent)]
-pub struct Ancestors<'a, 'rotxn> {
-    inner: AncestorHeaders<'a, 'rotxn>,
-}
-
-impl FallibleIterator for Ancestors<'_, '_> {
-    type Item = BlockHash;
-    type Error = Error;
-
-    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
-        self.inner
-            .next()
-            .map(|item| item.map(|(block_hash, _)| block_hash))
-    }
-}
-
-struct AncestorsRevInner {
-    end_height: u32,
-    /// Buffer of ancestors, newer-to-older.
-    buffer: Vec<(BlockHash, Header)>,
-}
-
-/// Return a Fallible iterator over ancestor headers of a block,
-/// starting from the specified block height,
-/// and ending with the specified block.
-struct AncestorsRev<'a, 'rotxn> {
-    archive: &'a Archive,
-    rotxn: &'a RoTxn<'rotxn>,
-    /// Inclusive.
-    /// None indicates that the iterator is done.
-    /// MUST be Some(_) on construction.
-    batch_start_height: Option<u32>,
-    block_hash: BlockHash,
-    inner: Option<AncestorsRevInner>,
-}
-
-impl<'a, 'rotxn> AncestorsRev<'a, 'rotxn> {
-    fn new(
-        archive: &'a Archive,
-        rotxn: &'a RoTxn<'rotxn>,
-        block_hash: BlockHash,
-        start_height: u32,
-    ) -> Self {
-        Self {
-            archive,
-            rotxn,
-            batch_start_height: Some(start_height),
-            block_hash,
-            inner: None,
-        }
-    }
-}
-
-impl FallibleIterator for AncestorsRev<'_, '_> {
-    type Item = (BlockHash, Header);
-    type Error = Error;
-
-    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
-        // Amortize get_nth_ancestor lookups by batching
-        const MAX_BATCH_SIZE: u32 = 32;
-        let inner = match self.inner.as_mut() {
-            Some(inner) => inner,
-            None => self.inner.insert(AncestorsRevInner {
-                end_height: self
-                    .archive
-                    .get_height(self.rotxn, self.block_hash)?,
-                buffer: Vec::with_capacity(MAX_BATCH_SIZE as usize),
-            }),
-        };
-        if let Some(item) = inner.buffer.pop() {
-            Ok(Some(item))
-        } else if let Some(batch_start_height) = self.batch_start_height {
-            let Some(height_diff) =
-                inner.end_height.checked_sub(batch_start_height)
-            else {
-                return Ok(None);
-            };
-            // Offset from batch start height
-            let ancestor_offset = height_diff.min(MAX_BATCH_SIZE - 1);
-            let batch_size = ancestor_offset + 1;
-            let nth_ancestor = height_diff - ancestor_offset;
-            let ancestor = self.archive.get_nth_ancestor(
-                self.rotxn,
-                self.block_hash,
-                nth_ancestor,
-            )?;
-            let () = self
-                .archive
-                .ancestor_headers(self.rotxn, ancestor)
-                .take(batch_size as usize)
-                .for_each(|item| {
-                    inner.buffer.push(item);
-                    Ok(())
-                })?;
-            self.batch_start_height = if let Some(batch_start_height) =
-                batch_start_height.checked_add(batch_size)
-                && batch_start_height <= inner.end_height
-            {
-                Some(batch_start_height)
-            } else {
-                None
-            };
-            Ok(inner.buffer.pop())
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use bitcoin::hashes::Hash as _;
 
-    use super::*;
-    use crate::types::{Body, orchard as o};
+    use crate::{
+        archive::Archive,
+        types::{BlockHash, Body, Coinbase, Header, orchard as o},
+    };
 
     struct TempDir(std::path::PathBuf);
 
@@ -1765,7 +1700,7 @@ mod tests {
     }
 
     fn empty_header(prev_side_hash: Option<BlockHash>) -> Header {
-        let body = Body::new(Vec::new(), Vec::new());
+        let body = Body::new(Vec::new(), Coinbase::default());
         Header {
             merkle_root: body.compute_merkle_root(),
             prev_side_hash,

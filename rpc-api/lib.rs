@@ -1,5 +1,8 @@
 //! RPC API
 
+/// Exported for convenience
+pub use typewit;
+
 mod schema;
 
 pub mod open_api {
@@ -19,45 +22,36 @@ pub mod open_api {
 }
 
 pub mod node {
-    use std::{collections::HashSet, net::SocketAddr};
+    use std::collections::HashSet;
 
     use jsonrpsee::{core::RpcResult, proc_macros::rpc};
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
-        Block, BlockHash, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
-        PointedOutput, SpentOutput, Transaction, TransparentAddress, Txid,
-        WithdrawalBundle, net::Peer, schema as thunder_orchard_schema,
+        Authorization, Block, BlockHash, Body, CoinbaseTxid, Header, InPoint,
+        M6id, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        SpentOutput, Transaction, TransparentAddress, Txid, WithdrawalBundle,
+        WithdrawalBundleStatus,
+        net::{Peer, PeerAddress, PeerConnectionStatus},
+        state::WithdrawalBundleInfo,
         transaction,
     };
+    use typewit::const_marker::Bool;
     use utoipa::ToSchema;
 
     use crate::{open_api, schema};
 
-    #[open_api(ref_schemas[Txid])]
+    #[open_api]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
     pub trait PrivateRpc {
         /// Connect to a peer
-        #[open_api_method(output_schema(ToSchema))]
         #[method(name = "connect_peer")]
-        async fn connect_peer(
-            &self,
-            #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::SocketAddr"
-            ))]
-            addr: SocketAddr,
-        ) -> RpcResult<()>;
+        async fn connect_peer(&self, addr: PeerAddress) -> RpcResult<()>;
 
         /// Delete peer from known_peers DB.
         /// Connections to the peer are not terminated.
         #[method(name = "forget_peer")]
-        async fn forget_peer(
-            &self,
-            #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::SocketAddr"
-            ))]
-            addr: SocketAddr,
-        ) -> RpcResult<()>;
+        async fn forget_peer(&self, addr: PeerAddress) -> RpcResult<()>;
 
         /// Invalidate a block, potentially re-orging to a valid ancestor of
         /// the current tip.
@@ -68,7 +62,6 @@ pub mod node {
         ) -> RpcResult<()>;
 
         /// Remove a tx from the mempool
-        #[open_api_method(output_schema(ToSchema))]
         #[method(name = "remove_from_mempool")]
         async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()>;
 
@@ -78,18 +71,222 @@ pub mod node {
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct TransactionVerbose {
+        #[serde(flatten)]
+        pub tx: Transaction,
+        #[serde(with = "const_hex")]
+        pub canonical_bytes: Vec<u8>,
+    }
+
+    pub mod get_block {
+        use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+        use serde::{Deserialize, Serialize, de::DeserializeOwned};
+        use thunder_orchard_types::{Authorization, Coinbase, Header};
+        use utoipa::ToSchema;
+
+        use crate::node::TransactionVerbose;
+
+        #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+        pub struct BodyVerbose {
+            pub coinbase: Coinbase,
+            pub transactions: Vec<TransactionVerbose>,
+            pub authorizations: Vec<Authorization>,
+        }
+
+        #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+        pub struct BlockVerbose {
+            pub header: Header,
+            pub body: BodyVerbose,
+        }
+
+        pub mod verbosity {
+            use serde::{Serialize, de::DeserializeOwned};
+            use thunder_orchard_types::Block;
+            use typewit::const_marker::Bool;
+
+            use crate::node::get_block::BlockVerbose;
+
+            mod private {
+                pub trait Sealed {}
+            }
+
+            pub trait Verbosity: Serialize + private::Sealed {
+                type Response: DeserializeOwned + Serialize;
+            }
+
+            impl<const B: bool> private::Sealed for Bool<B> {}
+
+            impl Verbosity for Bool<true> {
+                type Response = BlockVerbose;
+            }
+
+            impl Verbosity for Bool<false> {
+                type Response = Block;
+            }
+
+            impl private::Sealed for Option<Bool<false>> {}
+
+            impl Verbosity for Option<Bool<false>> {
+                type Response = <Bool<false> as Verbosity>::Response;
+            }
+        }
+        pub use verbosity::Verbosity;
+
+        #[rpc(client, server, server_bounds(
+            V: DeserializeOwned + Verbosity,
+            <V as Verbosity>::Response: Clone + 'static,
+        ))]
+        pub trait Rpc<V>
+        where
+            V: Verbosity,
+        {
+            /// Get the block with specified block hash, if it exists
+            #[method(name = "get_block")]
+            async fn get_block(
+                &self,
+                block_hash: thunder_orchard_types::BlockHash,
+                verbose: V,
+            ) -> RpcResult<Option<V::Response>>;
+        }
+
+        pub mod untyped {
+            use jsonrpsee::{
+                core::{RpcResult, async_trait},
+                proc_macros::rpc,
+            };
+            use l2l_openapi::open_api;
+            use serde::Serialize;
+            use thunder_orchard_types::{
+                Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid,
+                Header, MerkleRoot, Output, OutputContent, Transaction,
+                TransparentAddress, Txid, transaction::Outputs,
+            };
+            use typewit::const_marker::Bool;
+            use utoipa::ToSchema;
+
+            use crate::{
+                node::{
+                    TransactionVerbose,
+                    get_block::{
+                        BlockVerbose, BodyVerbose, RpcServer as GetBlock,
+                    },
+                },
+                schema,
+            };
+
+            mod private {
+                pub trait Sealed {}
+            }
+
+            impl<S> private::Sealed for S where
+                S: GetBlock<Bool<false>> + GetBlock<Bool<true>>
+            {
+            }
+
+            #[derive(Clone, Serialize, ToSchema)]
+            #[serde(untagged)]
+            pub enum Response {
+                NonVerbose(Block),
+                Verbose(BlockVerbose),
+            }
+
+            /// This trait exists only as a bound, and should not be implemented
+            /// manually
+            #[open_api(ref_schemas[
+                Authorization, Block, BlockHash, BlockVerbose, Body,
+                BodyVerbose, Coinbase, CoinbaseTxid, Header, MerkleRoot,
+                Output, OutputContent, Outputs, Transaction,
+                TransactionVerbose, TransparentAddress, Txid,
+                schema::BitcoinAddr, schema::BitcoinBlockHash,
+                schema::BitcoinOutPoint, schema::UtreexoNodeHash,
+                schema::UtreexoProof,
+            ])]
+            #[rpc(server, server_bounds(Self: private::Sealed))]
+            pub trait Rpc {
+                /// Get the block with specified block hash, if it exists
+                #[method(name = "get_block")]
+                async fn get_block(
+                    &self,
+                    block_hash: thunder_orchard_types::BlockHash,
+                    verbose: Option<bool>,
+                ) -> RpcResult<Option<Response>>;
+            }
+
+            #[async_trait]
+            impl<S> RpcServer for S
+            where
+                S: GetBlock<Bool<false>> + GetBlock<Bool<true>>,
+            {
+                async fn get_block(
+                    &self,
+                    block_hash: thunder_orchard_types::BlockHash,
+                    verbose: Option<bool>,
+                ) -> RpcResult<Option<Response>> {
+                    match verbose {
+                        Some(true) => {
+                            <Self as GetBlock<Bool<true>>>::get_block(
+                                self,
+                                block_hash,
+                                Bool::<true>,
+                            )
+                            .await
+                            .map(|res| res.map(Response::Verbose))
+                        }
+                        Some(false) | None => {
+                            <Self as GetBlock<Bool<false>>>::get_block(
+                                self,
+                                block_hash,
+                                Bool::<false>,
+                            )
+                            .await
+                            .map(|res| res.map(Response::NonVerbose))
+                        }
+                    }
+                }
+            }
+        }
+        pub use untyped::RpcDoc;
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
     pub struct GetTransactionResponse {
         pub tx: Transaction,
         /// Block hash, if in the active chain
         pub block_hash: Option<BlockHash>,
     }
 
-    #[open_api(ref_schemas[
-        MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
-        schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
-        thunder_orchard_schema::BitcoinOutPoint,
-    ])]
-    #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct GetWithdrawalBundleResponse {
+        pub info: WithdrawalBundleInfo,
+        pub status: WithdrawalBundleStatus,
+    }
+
+    #[open_api(
+        merge_apis[get_block::RpcDoc],
+        ref_schemas[
+            Authorization, BlockHash, Body, CoinbaseTxid, Header, InPoint,
+            M6id, MerkleRoot, OutPoint, Output, OutputContent,
+            PeerConnectionStatus, SpentOutput, Transaction, TransparentAddress,
+            Txid, WithdrawalBundle, WithdrawalBundleInfo,
+            WithdrawalBundleStatus, schema::BitcoinAddr,
+            schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+            schema::BitcoinTransaction, schema::BitcoinOutPoint,
+            schema::BitcoinTransaction, schema::SocketAddr,
+            schema::UtreexoNodeHash, schema::UtreexoProof,
+        ],
+    )]
+    #[rpc(
+        client,
+        client_bounds(
+            Self:
+                get_block::RpcClient<Bool<false>>
+                + get_block::RpcClient<Bool<true>>
+        ),
+        server,
+        server_bounds(
+            Self: open_api::RpcServer + get_block::untyped::RpcServer,
+        ),
+    )]
     pub trait Rpc {
         /// Connect a block template for which a BMM request was included in the
         /// specified mainchain block. Returns `true` if it was accepted as the new
@@ -100,14 +297,14 @@ pub mod node {
             &self,
             block: Block,
             #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::BitcoinBlockHash"
+                PartialSchema = "schema::BitcoinBlockHash"
             ))]
             main_block_hash: bitcoin::BlockHash,
         ) -> RpcResult<bool>;
 
         /// Get the best mainchain block hash known by Thunder-Orchard
         #[open_api_method(output_schema(
-            PartialSchema = "schema::Optional<thunder_orchard_schema::BitcoinBlockHash>"
+            PartialSchema = "schema::Optional<schema::BitcoinBlockHash>"
         ))]
         #[method(name = "get_best_mainchain_block_hash")]
         async fn get_best_mainchain_block_hash(
@@ -123,16 +320,20 @@ pub mod node {
             &self,
         ) -> RpcResult<Option<thunder_orchard_types::BlockHash>>;
 
-        /// Get the block with specified block hash, if it exists
-        #[method(name = "get_block")]
-        async fn get_block(
+        /// Get the block hash at the specified height in the active chain,
+        /// if it exists
+        #[open_api_method(output_schema(
+            PartialSchema = "schema::Optional<thunder_orchard_types::BlockHash>"
+        ))]
+        #[method(name = "get_block_hash")]
+        async fn get_block_hash(
             &self,
-            block_hash: thunder_orchard_types::BlockHash,
-        ) -> RpcResult<Option<thunder_orchard_types::Block>>;
+            height: u32,
+        ) -> RpcResult<Option<thunder_orchard_types::BlockHash>>;
 
         /// Get mainchain blocks that commit to a specified block hash
         #[open_api_method(output_schema(
-            PartialSchema = "thunder_orchard_schema::BitcoinBlockHash"
+            PartialSchema = "schema::BitcoinBlockHash"
         ))]
         #[method(name = "get_bmm_inclusions")]
         async fn get_bmm_inclusions(
@@ -145,7 +346,7 @@ pub mod node {
         async fn get_stxos(
             &self,
             addresses: HashSet<TransparentAddress>,
-        ) -> RpcResult<Vec<Pointed<SpentOutput>>>;
+        ) -> RpcResult<Vec<PointedOutput<SpentOutput>>>;
 
         /// Get transaction by txid
         #[method(name = "get_transaction")]
@@ -160,6 +361,13 @@ pub mod node {
             &self,
             addresses: HashSet<TransparentAddress>,
         ) -> RpcResult<Vec<PointedOutput>>;
+
+        /// Get withdrawal bundle by M6id
+        #[method(name = "get_withdrawal_bundle")]
+        async fn get_withdrawal_bundle(
+            &self,
+            m6id: M6id,
+        ) -> RpcResult<Option<GetWithdrawalBundleResponse>>;
 
         /// Get the current block count
         #[method(name = "getblockcount")]
@@ -204,10 +412,12 @@ pub mod wallet {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_orchard_types::{
-        Block, BlockHash, MerkleRoot, OutPoint, Output, OutputContent,
+        Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid, Header,
+        InPoint, M6id, MerkleRoot, OutPoint, Output, OutputContent,
         PointedOutput, ShieldedAddress, SpentOutput, Transaction,
-        TransparentAddress, Txid, schema as thunder_orchard_schema,
-        transaction, wallet::Balance,
+        TransparentAddress, Txid,
+        transaction::{self, Outputs},
+        wallet::Balance,
     };
     use utoipa::ToSchema;
 
@@ -225,9 +435,11 @@ pub mod wallet {
     }
 
     #[open_api(ref_schemas[
-        MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
-        schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
-        thunder_orchard_schema::BitcoinOutPoint,
+        Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid, Header,
+        InPoint, M6id, MerkleRoot, OutPoint, Output, OutputContent, Outputs,
+        PointedOutput, Transaction, TransparentAddress, Txid,
+        schema::BitcoinAddr, schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+        schema::UtreexoNodeHash, schema::UtreexoProof,
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
     pub trait Rpc {
@@ -289,7 +501,7 @@ pub mod wallet {
         async fn create_withdrawal(
             &self,
             #[open_api_method_arg(schema(
-                PartialSchema = "thunder_orchard_schema::BitcoinAddr"
+                PartialSchema = "schema::BitcoinAddr"
             ))]
             mainchain_address: bitcoin::Address<
                 bitcoin::address::NetworkUnchecked,
@@ -385,3 +597,6 @@ pub mod wallet {
         ) -> RpcResult<transaction::Authorized<Transaction>>;
     }
 }
+
+#[cfg(test)]
+mod test;

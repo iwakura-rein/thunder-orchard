@@ -6,21 +6,23 @@ use rayon::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+pub use rand::rand_core;
+
 use crate::{
-    AuthorizedTransaction, Body, Transaction, TransparentAddress,
-    error::Authorization as Error, orchard,
-    util::borsh::serialize as borsh_serialize,
+    AuthorizedTransaction, Body, Transaction, TransparentAddress, error,
+    orchard, util::borsh::serialize as borsh_serialize,
 };
 
-pub use ed25519_dalek::{Signer, Verifier};
+pub type Error = error::Authorization;
+pub type Signature = frost_ristretto255::Signature;
+pub type SigningKey = frost_ristretto255::SigningKey;
+pub type VerifyingKey = frost_ristretto255::VerifyingKey;
 
-pub type Signature = ed25519_dalek::Signature;
-pub type SigningKey = ed25519_dalek::SigningKey;
-pub type VerifyingKey = ed25519_dalek::VerifyingKey;
-
-pub fn get_address(verifying_key: &VerifyingKey) -> TransparentAddress {
+pub fn get_address(verifying_key: VerifyingKey) -> TransparentAddress {
     let mut hasher = blake3::Hasher::new();
-    let mut reader = hasher.update(&verifying_key.to_bytes()).finalize_xof();
+    let mut reader = hasher
+        .update(verifying_key.to_element().compress().as_bytes())
+        .finalize_xof();
     let mut output: [u8; 20] = [0; 20];
     reader.fill(&mut output);
     TransparentAddress(output)
@@ -45,37 +47,111 @@ pub struct Authorization {
     pub signature: Signature,
 }
 
-pub fn verify_authorized_transaction(
-    transaction: &AuthorizedTransaction,
-) -> Result<(), Error> {
-    let verifications_required = &transaction.transaction.inputs.len();
-    match transaction.authorizations.len().cmp(verifications_required) {
-        std::cmp::Ordering::Less => return Err(Error::NotEnoughAuthorizations),
-        std::cmp::Ordering::Equal => (),
-        std::cmp::Ordering::Greater => {
-            return Err(Error::TooManyAuthorizations);
+impl Authorization {
+    pub fn get_address(&self) -> TransparentAddress {
+        get_address(self.verifying_key)
+    }
+}
+
+/// Derives a CSPRNG seed for a single batch verification.
+struct BatchVerifier {
+    hasher: blake3::Hasher,
+    inner: frost_core::batch::Verifier<frost_ristretto255::Ristretto255Sha512>,
+    /// Item counter, added as a suffix to the hasher before verification
+    items: usize,
+}
+
+impl BatchVerifier {
+    pub fn queue_item<Msg>(
+        mut self,
+        verifying_key: VerifyingKey,
+        signature: Signature,
+        msg: Msg,
+    ) -> Result<Self, frost_ristretto255::Error>
+    where
+        Msg: AsRef<[u8]>,
+    {
+        let Self {
+            inner,
+            items,
+            hasher,
+        } = &mut self;
+        let msg_bytes = msg.as_ref();
+        // Borsh encoding for hashing
+        #[derive(BorshSerialize)]
+        struct HashComponents<'a> {
+            #[borsh(serialize_with = "borsh_serialize::verifying_key")]
+            verifying_key: &'a VerifyingKey,
+            #[borsh(serialize_with = "borsh_serialize::signature")]
+            signature: &'a Signature,
+            msg_bytes: &'a [u8],
+        }
+        borsh::to_writer(
+            hasher,
+            &HashComponents {
+                verifying_key: &verifying_key,
+                signature: &signature,
+                msg_bytes,
+            },
+        )
+        .expect("failed to serialize with borsh to compute a hash");
+        *items += 1;
+        inner.queue(frost_core::batch::Item::new(
+            verifying_key,
+            signature,
+            msg_bytes,
+        )?);
+        Ok(self)
+    }
+
+    /// Performs batch verification, returning `Ok(_)` if all signatures were
+    /// valid and the batch was non-empty, and `Err(_)` otherwise.
+    pub fn verify(self) -> Result<(), frost_ristretto255::Error> {
+        let Self {
+            hasher,
+            inner,
+            items,
+        } = self;
+        let rng = {
+            use rand::{SeedableRng, rngs::ChaCha20Rng};
+            // move hasher so that it can be dropped early automatically
+            let mut hasher = hasher;
+            borsh::to_writer(&mut hasher, &items)
+                .expect("failed to serialize with borsh to compute a hash");
+            <ChaCha20Rng as SeedableRng>::from_seed(hasher.finalize().into())
+        };
+        inner.verify(rng)
+    }
+}
+
+/// Required for batched verification.
+/// It should be safe to re-use the same batch verification context for
+/// several batched verifications.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct BatchVerificationContext {
+    mac_key: [u8; blake3::KEY_LEN],
+}
+
+impl BatchVerificationContext {
+    pub fn new<R>(rng: &mut R) -> Self
+    where
+        R: rand_core::CryptoRng,
+    {
+        let mut mac_key = [0; blake3::KEY_LEN];
+        rng.fill_bytes(&mut mac_key);
+        Self { mac_key }
+    }
+
+    /// Construct a new batch verifier
+    fn verifier(&self) -> BatchVerifier {
+        let Self { mac_key } = self;
+        BatchVerifier {
+            hasher: blake3::Hasher::new_keyed(mac_key),
+            inner: frost_core::batch::Verifier::new(),
+            items: 0,
         }
     }
-    let () = verify_orchard(&transaction.transaction)?;
-    let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
-    let messages: Vec<_> = std::iter::repeat_n(
-        tx_bytes_canonical.as_slice(),
-        transaction.authorizations.len(),
-    )
-    .collect();
-    let (verifying_keys, signatures): (Vec<VerifyingKey>, Vec<Signature>) =
-        transaction
-            .authorizations
-            .iter()
-            .map(
-                |Authorization {
-                     verifying_key,
-                     signature,
-                 }| (verifying_key, signature),
-            )
-            .unzip();
-    ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)?;
-    Ok(())
 }
 
 // Verify orchard authorization
@@ -92,7 +168,47 @@ fn verify_orchard(transaction: &Transaction) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
+pub fn verify_authorized_transaction(
+    ctxt: &BatchVerificationContext,
+    transaction: &AuthorizedTransaction,
+) -> Result<(), Error> {
+    let verifications_required = transaction.transaction.inputs.len();
+    match transaction
+        .authorizations
+        .len()
+        .cmp(&verifications_required)
+    {
+        std::cmp::Ordering::Less => return Err(Error::NotEnoughAuthorizations),
+        std::cmp::Ordering::Equal => (),
+        std::cmp::Ordering::Greater => {
+            return Err(Error::TooManyAuthorizations);
+        }
+    }
+    let () = verify_orchard(&transaction.transaction)?;
+    if verifications_required == 0 {
+        return Ok(());
+    }
+    let mut batch_verifier = ctxt.verifier();
+    let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
+    for auth in &transaction.authorizations {
+        let Authorization {
+            verifying_key,
+            signature,
+        } = auth;
+        batch_verifier = batch_verifier.queue_item(
+            *verifying_key,
+            *signature,
+            &tx_bytes_canonical,
+        )?;
+    }
+    let () = batch_verifier.verify()?;
+    Ok(())
+}
+
+pub fn verify_authorizations(
+    ctxt: &BatchVerificationContext,
+    body: &Body,
+) -> Result<(), Error> {
     // TODO: batch orchard verifications
     let () = body.transactions.par_iter().try_for_each(verify_orchard)?;
     let verifications_required =
@@ -123,43 +239,30 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
     assert_eq!(pairs.len(), body.authorizations.len());
     const CHUNK_SIZE: usize = 1 << 14;
     pairs.par_chunks(CHUNK_SIZE).try_for_each(|chunk| {
-        let (signatures, verifying_keys, messages): (
-            Vec<Signature>,
-            Vec<VerifyingKey>,
-            Vec<&[u8]>,
-        ) = chunk
-            .iter()
-            .map(|(auth, msg)| (auth.signature, auth.verifying_key, msg))
-            .collect();
-        ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)
+        let mut batch_verifier = ctxt.verifier();
+        for (auth, msg) in chunk {
+            let Authorization {
+                verifying_key,
+                signature,
+            } = auth;
+            batch_verifier =
+                batch_verifier.queue_item(*verifying_key, *signature, msg)?;
+        }
+        batch_verifier.verify()
     })?;
     Ok(())
 }
 
-impl Authorization {
-    pub fn get_address(&self) -> TransparentAddress {
-        get_address(&self.verifying_key)
-    }
-
-    pub fn verify_transaction(
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), Error> {
-        verify_authorized_transaction(transaction)?;
-        Ok(())
-    }
-
-    pub fn verify_body(body: &Body) -> Result<(), Error> {
-        verify_authorizations(body)?;
-        Ok(())
-    }
-}
-
-pub fn sign_orchard(
+pub fn sign_orchard<R>(
+    rng: R,
     signing_keys: &[orchard::SpendAuthorizingKey],
     transaction: Transaction<
         orchard::InProgress<orchard::BundleProof, orchard::Unauthorized>,
     >,
-) -> Result<Transaction, orchard::BuildError> {
+) -> Result<Transaction, orchard::BuildError>
+where
+    R: rand_core::CryptoRng,
+{
     let sighash: [u8; 32] = transaction.txid().0;
     let Transaction {
         inputs,
@@ -168,9 +271,7 @@ pub fn sign_orchard(
         orchard_bundle,
     } = transaction;
     let orchard_bundle = orchard_bundle
-        .map(|bundle| {
-            bundle.apply_signatures(rand::rngs::OsRng, sighash, signing_keys)
-        })
+        .map(|bundle| bundle.apply_signatures(rng, sighash, signing_keys))
         .transpose()?;
     let transaction = Transaction {
         inputs,
@@ -181,23 +282,33 @@ pub fn sign_orchard(
     Ok(transaction)
 }
 
-pub fn sign(
+pub fn sign<R>(
+    rng: R,
     signing_key: &SigningKey,
     transaction: &Transaction,
-) -> Result<Signature, Error> {
+) -> Result<Signature, Error>
+where
+    R: rand_core::CryptoRng,
+{
     let tx_bytes_canonical = borsh::to_vec(&transaction)?;
-    Ok(signing_key.sign(&tx_bytes_canonical))
+    let signature = signing_key.sign(rng, &tx_bytes_canonical);
+    Ok(signature)
 }
 
-pub fn authorize(
+pub fn authorize<R>(
+    mut rng: R,
     addresses_signing_keys: &[(TransparentAddress, &SigningKey)],
     transaction: Transaction,
-) -> Result<AuthorizedTransaction, Error> {
+) -> Result<AuthorizedTransaction, Error>
+where
+    R: rand_core::CryptoRng,
+{
     let mut authorizations: Vec<Authorization> =
         Vec::with_capacity(addresses_signing_keys.len());
     let tx_bytes_canonical = borsh::to_vec(&transaction)?;
     for (address, signing_key) in addresses_signing_keys {
-        let hash_verifying_key = get_address(&signing_key.verifying_key());
+        let verifying_key = VerifyingKey::from(*signing_key);
+        let hash_verifying_key = get_address(verifying_key);
         if *address != hash_verifying_key {
             return Err(Error::WrongKeyForAddress {
                 address: *address,
@@ -205,8 +316,8 @@ pub fn authorize(
             });
         }
         let authorization = Authorization {
-            verifying_key: signing_key.verifying_key(),
-            signature: signing_key.sign(&tx_bytes_canonical),
+            verifying_key,
+            signature: signing_key.sign(&mut rng, &tx_bytes_canonical),
         };
         authorizations.push(authorization);
     }

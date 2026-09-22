@@ -1,11 +1,12 @@
+//! Sidechain state as of the current sidechain tip
+
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
 };
 
 use fallible_iterator::FallibleIterator as _;
 use heed::types::SerdeBincode;
-use serde::{Deserialize, Serialize};
 use sneed::{
     DatabaseUnique, RoTxn, RwTxn, UnitKey,
     db::error::{self as db_error, Error as DbError},
@@ -15,12 +16,14 @@ use sneed::{
 use crate::{
     types::{
         self, Accumulator, AmountOverflowError, AmountUnderflowError,
-        Authorization, AuthorizedTransaction, BlockHash, Body,
-        FilledTransaction, GetValue, Header, InPoint, M6id, MerkleRoot,
-        OutPoint, OutPointKey, Output, PointedOutput, PointedOutputRef,
-        SpentOutput, Transaction, TransparentAddress, UtreexoNodeHash,
-        UtreexoProof, VERSION, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetValue,
+        Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey, Output,
+        PointedOutput, PointedOutputRef, SpentOutput, Transaction,
+        TransparentAddress, UtreexoNodeHash, UtreexoProof, VERSION, Version,
+        WithdrawalBundle, WithdrawalBundleStatus,
+        authorization::{self, BatchVerificationContext},
+        proto::mainchain::TwoWayPegData,
+        state::WithdrawalBundleInfo,
     },
     util::Watchable,
 };
@@ -47,20 +50,6 @@ pub struct PrevalidatedBlock {
     pub coinbase_value: bitcoin::Amount,
     pub next_height: u32, // Precomputed next height to avoid DB read in write txn
     pub accumulator_diff: types::AccumulatorDiff,
-}
-
-/// Information we have regarding a withdrawal bundle
-#[derive(Debug, Deserialize, Serialize)]
-enum WithdrawalBundleInfo {
-    /// Withdrawal bundle is known
-    Known(WithdrawalBundle),
-    /// Withdrawal bundle is unknown but unconfirmed / failed
-    Unknown,
-    /// If an unknown withdrawal bundle is confirmed, ALL UTXOs are
-    /// considered spent.
-    UnknownConfirmed {
-        spend_utxos: BTreeMap<OutPoint, Output>,
-    },
 }
 
 #[derive(Clone)]
@@ -138,9 +127,23 @@ impl State {
             )?;
         }
         let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")?;
-        if version.try_get(&rwtxn, &())?.is_none() {
-            version.put(&mut rwtxn, &(), &*VERSION)?;
-        }
+        match version.try_get(&rwtxn, &())? {
+            Some(db_version)
+                if db_version
+                    < Version {
+                        major: 0,
+                        minor: 18,
+                        patch: 0,
+                    } =>
+            {
+                return Err(Error::IncompatibleVersion {
+                    version: db_version,
+                    db_path: env.path().to_path_buf(),
+                });
+            }
+            Some(_) => (),
+            None => version.put(&mut rwtxn, &(), &*VERSION)?,
+        };
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             tip,
@@ -253,6 +256,22 @@ impl State {
                 panic!("missing failure status for {latest_failed_m6id}")
             });
         Ok(Some((failed_height, latest_failed_m6id)))
+    }
+
+    pub fn try_get_withdrawal_bundle(
+        &self,
+        rotxn: &RoTxn,
+        m6id: &M6id,
+    ) -> Result<
+        Option<(WithdrawalBundleInfo, WithdrawalBundleStatus)>,
+        db_error::TryGet,
+    > {
+        let Some((bundle_info, bundle_status)) =
+            self.withdrawal_bundles.try_get(rotxn, m6id)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some((bundle_info, bundle_status.latest().value)))
     }
 
     /// Get the current Utreexo accumulator
@@ -436,6 +455,7 @@ impl State {
     pub fn validate_transaction(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         transaction: &AuthorizedTransaction,
     ) -> Result<bitcoin::Amount, error::ValidateTransaction> {
         let filled_transaction = self
@@ -461,7 +481,10 @@ impl State {
         {
             let () = self.validate_orchard_anchor(rotxn, orchard_bundle)?;
         }
-        let () = Authorization::verify_transaction(transaction)?;
+        let () = authorization::verify_authorized_transaction(
+            batch_verification_ctxt,
+            transaction,
+        )?;
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
     }
@@ -568,10 +591,11 @@ impl State {
     pub fn validate_block(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<bitcoin::Amount, Error> {
-        block::validate(self, rotxn, header, body)
+        block::validate(batch_verification_ctxt, self, rotxn, header, body)
     }
 
     /// Returns data that must be archived in order to disconnect to the new
@@ -589,10 +613,11 @@ impl State {
     pub fn prevalidate_block(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<PrevalidatedBlock, Error> {
-        block::prevalidate(self, rotxn, header, body)
+        block::prevalidate(batch_verification_ctxt, self, rotxn, header, body)
     }
 
     pub fn connect_prevalidated_block(
@@ -608,11 +633,12 @@ impl State {
     pub fn apply_block(
         &self,
         rwtxn: &mut RwTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<Option<types::orchard::Frontier>, error::ConnectBlock> {
         let prevalidated = self
-            .prevalidate_block(rwtxn, header, body)
+            .prevalidate_block(rwtxn, batch_verification_ctxt, header, body)
             .map_err(|err| match err {
                 Error::InvalidHeader(h) => {
                     error::ConnectBlock::InvalidHeader(h)
@@ -631,8 +657,8 @@ impl State {
                 Error::WrongPubKeyForAddress => {
                     error::ConnectBlock::WrongPubKeyForAddress
                 }
-                Error::AuthorizationError => {
-                    error::ConnectBlock::AuthorizationError
+                Error::Authorization(err) => {
+                    error::ConnectBlock::Authorization(err)
                 }
                 Error::UtreexoRootsMismatch => {
                     error::ConnectBlock::UtreexoRootsMismatch
@@ -770,11 +796,12 @@ mod test {
         });
         let tx = FilledTransaction {
             transaction: Transaction {
-                inputs: vec![(outpoint, utxo_hash)],
+                inputs: vec![(outpoint, utxo_hash)].into(),
                 outputs: vec![value_output(
                     TransparentAddress::ALL_ZEROS,
                     1300,
-                )],
+                )]
+                .into(),
                 ..Default::default()
             },
             spent_utxos: vec![withdrawal],

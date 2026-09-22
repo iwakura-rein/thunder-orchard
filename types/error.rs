@@ -1,7 +1,7 @@
 use error_fatality::{Fatality, Split};
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("Bitcoin amount overflow")]
 pub struct AmountOverflow;
 
@@ -15,12 +15,12 @@ pub enum Authorization {
     #[error("borsh serialization error")]
     #[fatal(true)]
     BorshSerialize(#[from] borsh::io::Error),
-    #[error("ed25519_dalek error")]
-    #[fatal(false)]
-    Ed25519(#[from] ed25519_dalek::SignatureError),
     #[error("not enough authorizations")]
     #[fatal(false)]
     NotEnoughAuthorizations,
+    #[error("signature verification error")]
+    #[fatal(false)]
+    SignatureVerification(#[from] frost_ristretto255::Error),
     #[error("too many authorizations")]
     #[fatal(false)]
     TooManyAuthorizations,
@@ -84,3 +84,11 @@ pub mod withdrawal_bundle {
     pub struct Error(#[from] Inner);
 }
 pub use withdrawal_bundle::Error as WithdrawalBundle;
+
+#[derive(Debug, Error)]
+pub enum ParsePeerAddress {
+    #[error("missing port")]
+    MissingPort,
+    #[error(transparent)]
+    Parse(#[from] url::ParseError),
+}

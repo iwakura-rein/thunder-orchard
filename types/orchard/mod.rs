@@ -15,6 +15,7 @@ use orchard::{
     bundle::EffectsOnly,
     primitives::redpallas::{self, Binding, SigType},
 };
+use rand_core_compat::Rng010;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{
     Bytes, DeserializeAs, FromInto, IfIsHumanReadable, hex::Hex, serde_as,
@@ -37,6 +38,7 @@ pub use orchard::{
     tree::{MerkleHashOrchard, MerklePath},
     value::{BalanceError, NoteValue},
 };
+pub use rand::rand_core::{self, CryptoRng};
 
 pub use crate::address::ShieldedAddress as Address;
 
@@ -1760,9 +1762,12 @@ where
         rng: R,
     ) -> Result<Bundle<InProgress<BundleProof, S>>, BuildError>
     where
-        R: rand::RngCore,
+        R: CryptoRng,
     {
-        let bundle = self.0.create_proof(&PROVING_KEY, rng)?.map_authorization(
+        let bundle = self
+            .0
+            .create_proof(&PROVING_KEY, Rng010(rng))?
+            .map_authorization(
             &mut (),
             |_: &mut (),
              _: &InProgress<orchard::Proof, S>,
@@ -1785,7 +1790,7 @@ impl Bundle<InProgress<BundleProof, Unauthorized>> {
         signing_keys: &[SpendAuthorizingKey],
     ) -> Result<Bundle<Authorized>, BuildError>
     where
-        R: rand::CryptoRng + rand::RngCore,
+        R: CryptoRng,
     {
         let bundle = self.0.map_authorization(
             &mut (),
@@ -1796,7 +1801,7 @@ impl Bundle<InProgress<BundleProof, Unauthorized>> {
                 peel_inprogress_proof(auth),
         );
         bundle
-            .apply_signatures(rng, sighash, signing_keys)
+            .apply_signatures(Rng010(rng), sighash, signing_keys)
             .map(|bundle| Bundle(bundle).wrap())
     }
 }
@@ -1900,6 +1905,37 @@ where
 
 pub type UnauthorizedBundle = Bundle<InProgress<Unproven, Unauthorized>>;
 
+/// Wrapper for borsh encoding without auth
+#[derive(Educe, TransparentWrapper)]
+#[educe(Clone, Debug)]
+#[repr(transparent)]
+pub struct BorshSerializeWithoutAuth<Auth: BundleAuthorization>(
+    pub Bundle<Auth>,
+);
+
+impl<Auth> BorshSerializeWithoutAuth<Auth>
+where
+    Auth: BundleAuthorization,
+{
+    #[inline(always)]
+    pub fn wrap_ref(bundle: &Bundle<Auth>) -> &Self {
+        <Self as TransparentWrapper<_>>::wrap_ref(bundle)
+    }
+}
+
+impl<Auth> BorshSerialize for BorshSerializeWithoutAuth<Auth>
+where
+    Auth: BundleAuthorization,
+{
+    #[inline(always)]
+    fn serialize<W>(&self, writer: &mut W) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        self.0.borsh_serialize_without_auth(writer)
+    }
+}
+
 /// Builder for [`Bundle`]
 #[derive(Debug, TransparentWrapper)]
 #[repr(transparent)]
@@ -1947,10 +1983,11 @@ impl Builder {
         ovk: Option<OutgoingViewingKey>,
     ) -> Result<(), OutputError>
     where
-        R: rand::RngCore,
+        R: CryptoRng,
     {
         let dummy_spending_key = 'sk: loop {
-            let random_bytes = rand::Rng::r#gen(rng);
+            let mut random_bytes = [0u8; 32];
+            rand_core::Rng::fill_bytes(rng, &mut random_bytes);
             match SpendingKey::from_bytes(random_bytes).into_option() {
                 Some(sk) => break 'sk sk,
                 None => continue 'sk,
@@ -1984,7 +2021,7 @@ impl Builder {
         ovk: Option<OutgoingViewingKey>,
     ) -> Result<Option<(UnauthorizedBundle, BundleMetadata)>, BuildError>
     where
-        R: rand::RngCore,
+        R: CryptoRng,
     {
         if let Some(ovk) = ovk {
             let min_outputs_needed = std::cmp::max(2, self.spends().len());
@@ -2016,7 +2053,7 @@ impl Builder {
         }
         let res = self
             .0
-            .build(rng)?
+            .build(Rng010(rng))?
             .map(|(bundle, meta)| (Bundle(bundle), meta));
         Ok(res)
     }
@@ -2196,20 +2233,30 @@ impl Serialize for Frontier {
 #[cfg(test)]
 mod spend_auth_tests {
     use super::*;
-    use crate::{AuthorizationError, Transaction, authorization};
+    use crate::{
+        AuthorizationError, Transaction,
+        authorization::{self, BatchVerificationContext},
+    };
     use incrementalmerkletree::{Hashable, Level};
+    use rand::SeedableRng;
     use rustreexo::accumulator::proof::Proof;
 
     /// Forge a note owned by a fresh key, plus a one-leaf merkle path + anchor.
-    fn forge_spend() -> (
+    fn forge_spend<R>(
+        rng: &mut R,
+    ) -> (
         FullViewingKey,
         SpendAuthorizingKey,
         orchard::Note,
         MerklePath,
         Anchor,
-    ) {
+    )
+    where
+        R: CryptoRng,
+    {
         let sk = loop {
-            let b: [u8; 32] = rand::random();
+            let mut b = [0u8; 32];
+            rand_core::Rng::fill_bytes(rng, &mut b);
             if let Some(sk) = SpendingKey::from_bytes(b).into_option() {
                 break sk;
             }
@@ -2218,13 +2265,15 @@ mod spend_auth_tests {
         let ask = SpendAuthorizingKey::from(&sk);
         let recipient = fvk.address_at(0u32, Scope::External);
         let rho = loop {
-            let b: [u8; 32] = rand::random();
+            let mut b = [0u8; 32];
+            rand_core::Rng::fill_bytes(rng, &mut b);
             if let Some(r) = orchard::note::Rho::from_bytes(&b).into_option() {
                 break r;
             }
         };
         let rseed = loop {
-            let b: [u8; 32] = rand::random();
+            let mut b = [0u8; 32];
+            rand_core::Rng::fill_bytes(rng, &mut b);
             if let Some(s) =
                 orchard::note::RandomSeed::from_bytes(b, &rho).into_option()
             {
@@ -2250,8 +2299,11 @@ mod spend_auth_tests {
     }
 
     /// Build a fully valid, signed shielded-spend transaction.
-    fn signed_tx() -> Transaction {
-        let (fvk, ask, note, path, anchor) = forge_spend();
+    fn signed_tx<R>(mut rng: R) -> Transaction
+    where
+        R: CryptoRng,
+    {
+        let (fvk, ask, note, path, anchor) = forge_spend(&mut rng);
         let mut builder = Builder::new(BundleFlags::ENABLED, false, anchor);
         builder
             .add_spend(fvk.clone(), Note::wrap(note), path)
@@ -2266,24 +2318,24 @@ mod spend_auth_tests {
                 [0u8; 512],
             )
             .unwrap();
-        let (unauth, _meta) = builder
-            .build(rand::rngs::OsRng, Some(ovk))
-            .unwrap()
-            .unwrap();
-        let proven = unauth.create_proof(rand::rngs::OsRng).unwrap();
+        let (unauth, _meta) =
+            builder.build(&mut rng, Some(ovk)).unwrap().unwrap();
+        let proven = unauth.create_proof(&mut rng).unwrap();
         let tx = Transaction {
-            inputs: Vec::new(),
+            inputs: Vec::new().into(),
             proof: Proof::default(),
-            outputs: Vec::new(),
+            outputs: Vec::new().into(),
             orchard_bundle: Some(proven),
         };
-        authorization::sign_orchard(&[ask], tx).unwrap()
+        authorization::sign_orchard(rng, &[ask], tx).unwrap()
     }
 
     /// A correctly signed shielded spend passes spend-auth verification.
     #[test]
     fn valid_spend_auth_accepted() {
-        let tx = signed_tx();
+        let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
+        let batch_verification_ctxt = BatchVerificationContext::new(&mut rng);
+        let tx = signed_tx(&mut rng);
         let txid = tx.txid();
         let bundle = tx.orchard_bundle.as_ref().unwrap();
         bundle
@@ -2294,14 +2346,20 @@ mod spend_auth_tests {
             transaction: tx.clone(),
             authorizations: Vec::new(),
         };
-        authorization::verify_authorized_transaction(&authtx).unwrap();
+        authorization::verify_authorized_transaction(
+            &batch_verification_ctxt,
+            &authtx,
+        )
+        .unwrap();
     }
 
     /// A spend with a forged/invalid spend-auth signature is rejected, even
     /// though the binding signature and the proof are still valid.
     #[test]
     fn invalid_spend_auth_rejected() {
-        let tx = signed_tx();
+        let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
+        let batch_verification_ctxt = BatchVerificationContext::new(&mut rng);
+        let tx = signed_tx(&mut rng);
         let txid = tx.txid();
         let sighash = txid.0;
 
@@ -2310,12 +2368,13 @@ mod spend_auth_tests {
         // authorizations), the binding signature, or the proof.
         let raw = tx.orchard_bundle.unwrap().0;
         let bogus_sk = loop {
-            let b: [u8; 32] = rand::random();
+            let mut b = [0u8; 32];
+            rand::Rng::fill_bytes(&mut rng, &mut b);
             if let Ok(k) = redpallas::SigningKey::<SpendAuth>::try_from(b) {
                 break k;
             }
         };
-        let bogus = Signature::wrap(bogus_sk.sign(rand::rngs::OsRng, &sighash));
+        let bogus = Signature::wrap(bogus_sk.sign(Rng010(rng), &sighash));
         let mut new_actions: Vec<orchard::Action<Signature<SpendAuth>>> = raw
             .actions()
             .iter()
@@ -2354,9 +2413,9 @@ mod spend_auth_tests {
         );
 
         let tampered_tx = Transaction {
-            inputs: Vec::new(),
+            inputs: Vec::new().into(),
             proof: Proof::default(),
-            outputs: Vec::new(),
+            outputs: Vec::new().into(),
             orchard_bundle: Some(tampered),
         };
         // Same txid, valid binding signature, valid proof.
@@ -2380,7 +2439,10 @@ mod spend_auth_tests {
             authorizations: Vec::new(),
         };
         assert!(matches!(
-            authorization::verify_authorized_transaction(&authtx),
+            authorization::verify_authorized_transaction(
+                &batch_verification_ctxt,
+                &authtx,
+            ),
             Err(AuthorizationError::OrchardSignature(_))
         ));
     }

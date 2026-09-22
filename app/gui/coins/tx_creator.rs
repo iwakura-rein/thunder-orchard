@@ -23,10 +23,11 @@ fn send_tx(
         orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
     >,
 ) -> anyhow::Result<()> {
-    let tx = tx.clone().create_proof()?;
+    let tx = tx.clone().create_proof(rand::rng())?;
     let mut tx = {
         let rotxn = app.wallet.env().read_txn()?;
-        app.wallet.authorize_orchard_bundle(&rotxn, tx)?
+        app.wallet
+            .authorize_orchard_bundle(rand::rng(), &rotxn, tx)?
     };
     app.node.regenerate_proof(&mut tx)?;
     let () = app.sign_and_send(tx)?;

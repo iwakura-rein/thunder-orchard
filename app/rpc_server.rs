@@ -7,10 +7,14 @@ use jsonrpsee::{
     types::ErrorObject,
 };
 use thunder_orchard::types::{
-    Block, Pointed, PointedOutput, ShieldedAddress, SpentOutput,
-    TransparentAddress, Txid, WithdrawalBundle, net::Peer, wallet::Balance,
+    Block, M6id, PointedOutput, ShieldedAddress, SpentOutput,
+    TransparentAddress, Txid, WithdrawalBundle,
+    net::{Peer, PeerAddress},
+    wallet::Balance,
 };
-use thunder_orchard_app_rpc_api as rpc_api;
+use thunder_orchard_app_rpc_api::{
+    self as rpc_api, typewit::const_marker::Bool,
+};
 use tower_http::{
     cors::CorsLayer,
     request_id::{
@@ -76,11 +80,20 @@ impl rpc_api::open_api::RpcServer for RpcServerImpl<true> {
 
 #[async_trait]
 impl rpc_api::node::PrivateRpcServer for RpcServerImpl<true> {
-    async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
-        self.app.node.connect_peer(addr).map_err(custom_err)
+    async fn connect_peer(&self, addr: PeerAddress) -> RpcResult<()> {
+        let resolved_addr = thunder_orchard::net::resolve_peer_address(
+            self.app.node.dns_resolver(),
+            addr,
+        )
+        .await
+        .map_err(custom_err)?;
+        self.app
+            .node
+            .connect_peer(resolved_addr)
+            .map_err(custom_err)
     }
 
-    async fn forget_peer(&self, addr: SocketAddr) -> RpcResult<()> {
+    async fn forget_peer(&self, addr: PeerAddress) -> RpcResult<()> {
         match self.app.node.forget_peer(&addr) {
             Ok(_) => Ok(()),
             Err(err) => Err(custom_err(err)),
@@ -103,6 +116,78 @@ impl rpc_api::node::PrivateRpcServer for RpcServerImpl<true> {
 
     async fn stop(&self) {
         std::process::exit(0);
+    }
+}
+
+#[async_trait]
+impl<const ENABLE_PRIVATE_API: bool>
+    rpc_api::node::get_block::RpcServer<Bool<false>>
+    for RpcServerImpl<ENABLE_PRIVATE_API>
+{
+    async fn get_block(
+        &self,
+        block_hash: thunder_orchard::types::BlockHash,
+        _verbose: Bool<false>,
+    ) -> RpcResult<
+        Option<<Bool<false> as rpc_api::node::get_block::Verbosity>::Response>,
+    > {
+        let Some(header) = self
+            .app
+            .node
+            .try_get_header(block_hash)
+            .map_err(custom_err)?
+        else {
+            return Ok(None);
+        };
+        let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
+        let block = thunder_orchard::types::Block { header, body };
+        Ok(Some(block))
+    }
+}
+
+#[async_trait]
+impl<const ENABLE_PRIVATE_API: bool>
+    rpc_api::node::get_block::RpcServer<Bool<true>>
+    for RpcServerImpl<ENABLE_PRIVATE_API>
+{
+    async fn get_block(
+        &self,
+        block_hash: thunder_orchard::types::BlockHash,
+        _verbose: Bool<true>,
+    ) -> RpcResult<
+        Option<<Bool<true> as rpc_api::node::get_block::Verbosity>::Response>,
+    > {
+        let Some(header) = self
+            .app
+            .node
+            .try_get_header(block_hash)
+            .map_err(custom_err)?
+        else {
+            return Ok(None);
+        };
+        let thunder_orchard::types::Body {
+            coinbase,
+            transactions,
+            authorizations,
+        } = self.app.node.get_body(block_hash).map_err(custom_err)?;
+        let transactions_verbose = transactions
+            .into_iter()
+            .map(|tx| {
+                Ok(rpc_api::node::TransactionVerbose {
+                    canonical_bytes: tx.canonical_bytes()?,
+                    tx,
+                })
+            })
+            .collect::<std::io::Result<_>>()
+            .map_err(custom_err)?;
+        let body = rpc_api::node::get_block::BodyVerbose {
+            coinbase,
+            transactions: transactions_verbose,
+            authorizations,
+        };
+        let block_verbose =
+            rpc_api::node::get_block::BlockVerbose { header, body };
+        Ok(Some(block_verbose))
     }
 }
 
@@ -157,21 +242,11 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
         self.app.node.try_get_tip(&rotxn).map_err(custom_err)
     }
 
-    async fn get_block(
+    async fn get_block_hash(
         &self,
-        block_hash: thunder_orchard::types::BlockHash,
-    ) -> RpcResult<Option<thunder_orchard::types::Block>> {
-        let Some(header) = self
-            .app
-            .node
-            .try_get_header(block_hash)
-            .map_err(custom_err)?
-        else {
-            return Ok(None);
-        };
-        let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
-        let block = thunder_orchard::types::Block { header, body };
-        Ok(Some(block))
+        height: u32,
+    ) -> RpcResult<Option<thunder_orchard::types::BlockHash>> {
+        self.app.node.try_get_block_hash(height).map_err(custom_err)
     }
 
     async fn get_bmm_inclusions(
@@ -187,14 +262,14 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
     async fn get_stxos(
         &self,
         addresses: HashSet<TransparentAddress>,
-    ) -> RpcResult<Vec<Pointed<SpentOutput>>> {
+    ) -> RpcResult<Vec<PointedOutput<SpentOutput>>> {
         let res = self
             .app
             .node
             .get_stxos_by_addresses(&addresses)
             .map_err(custom_err)?
             .into_iter()
-            .map(|(outpoint, output)| Pointed { outpoint, output })
+            .map(|(outpoint, output)| PointedOutput { outpoint, output })
             .collect();
         Ok(res)
     }
@@ -227,6 +302,25 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
             .map(|(outpoint, output)| PointedOutput { outpoint, output })
             .collect();
         Ok(res)
+    }
+
+    async fn get_withdrawal_bundle(
+        &self,
+        m6id: M6id,
+    ) -> RpcResult<Option<rpc_api::node::GetWithdrawalBundleResponse>> {
+        let Some((bundle_info, bundle_status)) = self
+            .app
+            .node
+            .try_get_withdrawal_bundle(&m6id)
+            .map_err(custom_err)?
+        else {
+            return Ok(None);
+        };
+        let response = rpc_api::node::GetWithdrawalBundleResponse {
+            info: bundle_info,
+            status: bundle_status,
+        };
+        Ok(Some(response))
     }
 
     async fn getblockcount(&self) -> RpcResult<u32> {
@@ -321,6 +415,7 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = tokio::task::block_in_place(|| {
             self.app.wallet.create_shield_transaction(
+                rand::rng(),
                 &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
@@ -343,6 +438,7 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = tokio::task::block_in_place(|| {
             self.app.wallet.create_shielded_transaction(
+                rand::rng(),
                 &accumulator,
                 dest,
                 Amount::from_sat(value_sats),
@@ -389,6 +485,7 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = tokio::task::block_in_place(|| {
             self.app.wallet.create_unshield_transaction(
+                rand::rng(),
                 &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
@@ -631,8 +728,11 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
         transaction: thunder_orchard::types::Transaction,
         broadcast: Option<bool>,
     ) -> RpcResult<thunder_orchard::types::AuthorizedTransaction> {
-        let mut authorized =
-            self.app.wallet.authorize(transaction).map_err(custom_err)?;
+        let mut authorized = self
+            .app
+            .wallet
+            .authorize(rand::rng(), transaction)
+            .map_err(custom_err)?;
         if let Some(true) = broadcast {
             let () = self
                 .app
@@ -746,6 +846,11 @@ pub async fn run_server(
             let rpc_server_impl = RpcServerImpl::<false> { app: app.clone() };
             let mut rpc_module =
                 rpc_api::open_api::RpcServer::into_rpc(rpc_server_impl.clone());
+            rpc_module.merge(
+                rpc_api::node::get_block::untyped::RpcServer::into_rpc(
+                    rpc_server_impl.clone(),
+                ),
+            )?;
             rpc_module
                 .merge(rpc_api::node::RpcServer::into_rpc(rpc_server_impl))?;
             server.start(rpc_module)
@@ -755,6 +860,11 @@ pub async fn run_server(
             let mut rpc_module = rpc_api::open_api::RpcServer::into_rpc(
                 PrivateOnlyRpcServerImpl,
             );
+            rpc_module.merge(
+                rpc_api::node::get_block::untyped::RpcServer::into_rpc(
+                    rpc_server_impl.clone(),
+                ),
+            )?;
             rpc_module.merge(rpc_api::node::PrivateRpcServer::into_rpc(
                 rpc_server_impl.clone(),
             ))?;
@@ -780,6 +890,11 @@ pub async fn run_server(
         rpc_module.merge(rpc_api::node::PrivateRpcServer::into_rpc(
             rpc_server_impl.clone(),
         ))?;
+        rpc_module.merge(
+            rpc_api::node::get_block::untyped::RpcServer::into_rpc(
+                rpc_server_impl.clone(),
+            ),
+        )?;
         rpc_module.merge(rpc_api::node::RpcServer::into_rpc(
             rpc_server_impl.clone(),
         ))?;

@@ -1,13 +1,16 @@
-use std::{marker::PhantomData, net::SocketAddr, time::Duration};
+use std::{marker::PhantomData, time::Duration};
 
 use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder_orchard::types::{ShieldedAddress, TransparentAddress, Txid};
 use thunder_orchard_app_rpc_api::{
-    node::{PrivateRpcClient as _, RpcClient as _},
+    node::{PrivateRpcClient as _, RpcClient as _, get_block::RpcClient as _},
+    typewit::const_marker::Bool,
     wallet::RpcClient as _,
+};
+use thunder_orchard_types::{
+    M6id, ShieldedAddress, TransparentAddress, Txid, net::PeerAddress,
 };
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -37,7 +40,7 @@ pub enum Command {
         main_block_hash: bitcoin::BlockHash,
     },
     /// Connect to a peer
-    ConnectPeer { addr: SocketAddr },
+    ConnectPeer { addr: PeerAddress },
     /// Deposit to address
     CreateDeposit {
         address: TransparentAddress,
@@ -90,7 +93,7 @@ pub enum Command {
     },
     /// Delete peer from known_peers DB.
     /// Connections to the peer are not terminated.
-    ForgetPeer { addr: SocketAddr },
+    ForgetPeer { addr: PeerAddress },
     /// Format a deposit address
     FormatDepositAddress { address: TransparentAddress },
     /// Generate a mnemonic seed phrase
@@ -101,13 +104,19 @@ pub enum Command {
     GetBestSidechainBlockHash,
     /// Get the block with specified block hash, if it exists
     GetBlock {
-        block_hash: thunder_orchard::types::BlockHash,
+        block_hash: thunder_orchard_types::BlockHash,
+        verbose: Option<bool>,
     },
+    /// Get the current block count
+    GetBlockcount,
+    /// Get the block hash at the specified height in the active chain, if it
+    /// exists
+    GetBlockHash { height: u32 },
     /// Assemble a block to blind merge mine, without requesting BMM for it
     GetBlockTemplate,
     /// Get mainchain blocks that commit to a specified block hash
     GetBmmInclusions {
-        block_hash: thunder_orchard::types::BlockHash,
+        block_hash: thunder_orchard_types::BlockHash,
     },
     /// Get a new shielded address
     GetNewShieldedAddress,
@@ -137,12 +146,12 @@ pub enum Command {
     GetWalletUtxos,
     /// Get unconfirmed wallet UTXOs
     GetWalletUtxosUnconfirmed,
-    /// Get the current block count
-    GetBlockcount,
+    /// Get withdrawal bundle by M6id
+    GetWithdrawalBundle { m6id: M6id },
     /// Invalidate a block, potentially re-orging to a valid ancestor of the
     /// current tip.
     InvalidateBlock {
-        block_hash: thunder_orchard::types::BlockHash,
+        block_hash: thunder_orchard_types::BlockHash,
     },
     /// Get the height of the latest failed withdrawal bundle
     LatestFailedWithdrawalBundleHeight,
@@ -168,8 +177,8 @@ pub enum Command {
     SidechainWealth,
     /// Sign a transaction, and optionally broadcast it.
     SignTransaction {
-        #[arg(value_parser = JsonParser::<thunder_orchard::types::Transaction>::parse)]
-        transaction: thunder_orchard::types::Transaction,
+        #[arg(value_parser = JsonParser::<thunder_orchard_types::Transaction>::parse)]
+        transaction: thunder_orchard_types::Transaction,
         #[arg(default_value_t = false)]
         broadcast: bool,
     },
@@ -177,9 +186,9 @@ pub enum Command {
     SubmitTransaction {
         #[arg(
             value_parser =
-                JsonParser::<thunder_orchard::types::AuthorizedTransaction>::parse
+                JsonParser::<thunder_orchard_types::AuthorizedTransaction>::parse
         )]
-        transaction: thunder_orchard::types::AuthorizedTransaction,
+        transaction: thunder_orchard_types::AuthorizedTransaction,
     },
     /// Stop the node
     Stop,
@@ -188,7 +197,7 @@ pub enum Command {
 fn default_rpc_url() -> url::Url {
     url::Url::parse(&format!(
         "http://localhost:60{}",
-        thunder_orchard::types::THIS_SIDECHAIN
+        thunder_orchard_types::THIS_SIDECHAIN
     ))
     .unwrap()
 }
@@ -230,6 +239,10 @@ where
             let accepted =
                 rpc_client.connect_block(block, main_block_hash).await?;
             format!("{accepted}")
+        }
+        Command::GetBlockHash { height } => {
+            let block_hash = rpc_client.get_block_hash(height).await?;
+            serde_json::to_string_pretty(&block_hash)?
         }
         Command::ConnectPeer { addr } => {
             let () = rpc_client.connect_peer(addr).await?;
@@ -303,10 +316,6 @@ where
             rpc_client.format_deposit_address(address).await?
         }
         Command::GenerateMnemonic => rpc_client.generate_mnemonic().await?,
-        Command::GetBlock { block_hash } => {
-            let block = rpc_client.get_block(block_hash).await?;
-            serde_json::to_string_pretty(&block)?
-        }
         Command::GetBestMainchainBlockHash => {
             let block_hash = rpc_client.get_best_mainchain_block_hash().await?;
             serde_json::to_string_pretty(&block_hash)?
@@ -314,6 +323,25 @@ where
         Command::GetBestSidechainBlockHash => {
             let block_hash = rpc_client.get_best_sidechain_block_hash().await?;
             serde_json::to_string_pretty(&block_hash)?
+        }
+        Command::GetBlock {
+            block_hash,
+            verbose,
+        } => match verbose {
+            Some(true) => {
+                let block =
+                    rpc_client.get_block(block_hash, Bool::<true>).await?;
+                serde_json::to_string_pretty(&block)?
+            }
+            Some(false) | None => {
+                let block =
+                    rpc_client.get_block(block_hash, Bool::<false>).await?;
+                serde_json::to_string_pretty(&block)?
+            }
+        },
+        Command::GetBlockcount => {
+            let blockcount = rpc_client.getblockcount().await?;
+            format!("{blockcount}")
         }
         Command::GetBlockTemplate => {
             let template = rpc_client.get_block_template().await?;
@@ -371,9 +399,10 @@ where
             let utxos = rpc_client.get_wallet_utxos_unconfirmed().await?;
             serde_json::to_string_pretty(&utxos)?
         }
-        Command::GetBlockcount => {
-            let blockcount = rpc_client.getblockcount().await?;
-            format!("{blockcount}")
+        Command::GetWithdrawalBundle { m6id } => {
+            let withdrawal_bundle =
+                rpc_client.get_withdrawal_bundle(m6id).await?;
+            serde_json::to_string_pretty(&withdrawal_bundle)?
         }
         Command::InvalidateBlock { block_hash } => {
             let () = rpc_client.invalidate_block(block_hash).await?;
