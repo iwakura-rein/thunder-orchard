@@ -85,6 +85,7 @@ ignore = [
 # Setting this to true can be helpful if you have special authentication requirements that cargo-deny does not support.
 # See Git Authentication for more information about setting up git authentication.
 #git-fetch-with-cli = true
+yanked = "deny"
 
 # This section is considered when running `cargo deny check licenses`
 # More documentation for the licenses section can be found here:
@@ -118,9 +119,8 @@ exceptions = [
     { allow = ["CDLA-Permissive-2.0"], name = "webpki-root-certs", version = "0.26.11" },
     { allow = ["CDLA-Permissive-2.0"], name = "webpki-root-certs", version = "1.0.5" },
     { allow = ["CDLA-Permissive-2.0"], name = "webpki-roots", version = "1.0.5" },
-    { allow = ["MPL-2.0"], name = "bitmaps", version = "3.2.1" },
     { allow = ["MPL-2.0"], name = "imbl", version = "7.0.0" },
-    { allow = ["MPL-2.0"], name = "imbl-sized-chunks", version = "0.1.3" },
+    { allow = ["MPL-2.0"], name = "imbl-sized-chunks", version = "0.2.0" },
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
     { allow = ["MPL-2.0"], name = "webpki-roots", version = "0.25.4" },
     { allow = ["Zlib"], crate = "foldhash" },
