@@ -657,11 +657,15 @@ impl App {
                 let outputs = match tx_fees {
                     bitcoin::Amount::ZERO => Vec::new(),
                     tx_fees => {
+                        // A template is built on every poll and mostly thrown
+                        // away, so it must not derive an address each time.
                         let address = (|| {
                             let mut rwtxn = self.wallet.env().write_txn()?;
                             let res = self
                                 .wallet
-                                .get_new_transparent_address(&mut rwtxn)?;
+                                .get_or_generate_last_transparent_address(
+                                    &mut rwtxn,
+                                )?;
                             rwtxn.commit()?;
                             Ok::<_, thunder_orchard::wallet::Error>(res)
                         })()?;
