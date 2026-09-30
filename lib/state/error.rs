@@ -8,7 +8,7 @@ use transitive::Transitive;
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash, Hash, M6id,
     MerkleRoot, OutPoint, TransparentAddress, Txid, UtreexoError, Version,
-    WithdrawalBundleError, error, orchard,
+    WithdrawalBundleError, authorization, orchard,
 };
 
 #[derive(Debug, Error)]
@@ -217,7 +217,7 @@ impl From<db::Error> for ConnectTransaction {
 #[transitive(from(db::TryGet, db::Error))]
 pub enum ConnectBlock {
     #[error("failed to verify authorization")]
-    Authorization(#[from] error::Authorization),
+    Authorization(#[from] authorization::Error),
     #[error("body too large")]
     BodyTooLarge,
     #[error("error connecting transaction (`{txid}`)")]
@@ -355,7 +355,7 @@ impl From<db::Error> for ConnectWithdrawalBundleSubmitted {
 )]
 pub enum Error {
     #[error("failed to verify authorization")]
-    Authorization(#[from] error::Authorization),
+    Authorization(#[from] authorization::Error),
     #[error(transparent)]
     AmountOverflow(#[from] AmountOverflowError),
     #[error("body too large")]

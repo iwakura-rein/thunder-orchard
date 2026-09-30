@@ -167,6 +167,7 @@ pub fn validate(
     }
     let () =
         authorization::verify_authorizations(batch_verification_context, body)?;
+    // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff)?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
@@ -321,6 +322,7 @@ pub fn prevalidate(
     }
     let () =
         authorization::verify_authorizations(batch_verification_ctxt, body)?;
+    // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
