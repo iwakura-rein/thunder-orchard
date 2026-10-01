@@ -1,4 +1,5 @@
 use eframe::egui;
+use thunder_orchard::types::wallet::CoinSelectionHeights;
 
 use crate::app::App;
 
@@ -13,9 +14,16 @@ fn create_shield_tx(
     amount: bitcoin::Amount,
     fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
+    let main_height = app.node.try_get_mainchain_tip_height()?.unwrap_or(0);
+    let spend_height =
+        app.node.try_get_height()?.map_or(0, |height| height + 1);
     let accumulator = app.node.get_tip_accumulator()?;
     let tx = app.wallet.create_shield_transaction(
         rand::rng(),
+        CoinSelectionHeights {
+            main_height,
+            spend_height,
+        },
         &accumulator,
         amount,
         fee,

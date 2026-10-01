@@ -24,6 +24,14 @@ pub struct UtxoHashMismatch {
     pub(in crate::state) input_hash: Hash,
 }
 
+#[derive(Debug, Error)]
+pub enum ImmatureOutPoint {
+    #[error("immature coinbase outpoint")]
+    Coinbase,
+    #[error("immature deposit outpoint")]
+    Deposit,
+}
+
 #[derive(Debug, Error, Fatality, Split)]
 pub enum ValidateFilledTransaction {
     #[error(transparent)]
@@ -32,6 +40,15 @@ pub enum ValidateFilledTransaction {
     #[error(transparent)]
     #[fatal(false)]
     AmountUnderflow(#[from] AmountUnderflowError),
+    #[error(transparent)]
+    #[fatal(true)]
+    DbGet(Box<db::Get>),
+    #[error(transparent)]
+    #[fatal(true)]
+    DbTryGet(Box<db::TryGet>),
+    #[error(transparent)]
+    #[fatal(false)]
+    ImmatureOutPoint(#[from] ImmatureOutPoint),
     #[error("value in is less than value out")]
     #[fatal(false)]
     NotEnoughValueIn,
@@ -41,6 +58,18 @@ pub enum ValidateFilledTransaction {
     #[error(transparent)]
     #[fatal(false)]
     UtxoHashMismatch(#[from] Box<UtxoHashMismatch>),
+}
+
+impl From<db::Get> for ValidateFilledTransaction {
+    fn from(err: db::Get) -> Self {
+        Self::DbGet(Box::new(err))
+    }
+}
+
+impl From<db::TryGet> for ValidateFilledTransaction {
+    fn from(err: db::TryGet) -> Self {
+        Self::DbTryGet(Box::new(err))
+    }
 }
 
 impl From<UtxoHashMismatch> for ValidateFilledTransaction {
@@ -228,6 +257,8 @@ pub enum ConnectBlock {
     #[error(transparent)]
     Db(#[from] Box<db::Error>),
     #[error(transparent)]
+    ImmatureOutPoint(#[from] ImmatureOutPoint),
+    #[error(transparent)]
     InvalidBody(#[from] InvalidBody),
     #[error("invalid header: {0}")]
     InvalidHeader(InvalidHeader),
@@ -370,6 +401,8 @@ pub enum Error {
     Db(Box<sneed::Error>),
     #[error("failed to fill inputs for tx ({txid})")]
     FillTransaction { source: FillTransaction, txid: Txid },
+    #[error(transparent)]
+    ImmatureOutPoint(#[from] ImmatureOutPoint),
     #[error(
         "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
         .version,

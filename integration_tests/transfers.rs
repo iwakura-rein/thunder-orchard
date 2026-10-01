@@ -17,6 +17,7 @@ use bitcoin::Amount;
 use futures::{
     FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
 };
+use thunder_orchard::types::transaction::outpoint::DEPOSIT_MATURITY;
 use thunder_orchard_app_rpc_api::{
     node::{PrivateRpcClient as _, RpcClient as _},
     wallet::RpcClient as _,
@@ -156,6 +157,11 @@ async fn transfers_task(
         assert_eq!(alice_balance.total_transparent, DEPOSIT_AMOUNT);
         assert_eq!(bob_balance.total(), Amount::ZERO);
     }
+    tracing::info!("BMMing sidechain blocks...");
+    sidechain_nodes
+        .alice
+        .bmm(&mut enforcer_post_setup, DEPOSIT_MATURITY)
+        .await?;
     tracing::info!("Transparent transfer (alice -> bob)");
     let _txid = sidechain_nodes
         .alice

@@ -1,4 +1,5 @@
 use eframe::egui::{self, Button};
+use thunder_orchard::types::wallet::CoinSelectionHeights;
 
 use crate::app::App;
 
@@ -148,8 +149,15 @@ fn create_withdrawal(
     mainchain_fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
     let accumulator = app.node.get_tip_accumulator()?;
+    let main_height = app.node.try_get_mainchain_tip_height()?.unwrap_or(0);
+    let spend_height =
+        app.node.try_get_height()?.map_or(0, |height| height + 1);
     let tx = app.wallet.create_withdrawal(
         &accumulator,
+        CoinSelectionHeights {
+            main_height,
+            spend_height,
+        },
         mainchain_address,
         amount,
         mainchain_fee,

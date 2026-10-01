@@ -12,6 +12,7 @@ use thiserror::Error;
 use thunder_orchard::{
     miner::{self, Miner},
     node::{self, FatalErrorTx, Node},
+    state,
     types::{
         self, Body, Coinbase, InPoint, OutPoint, Transaction,
         TransparentAddress,
@@ -133,6 +134,36 @@ fn update_wallet<'a>(
         .state()
         .get_utxos_by_addresses(&node_rotxn, &addresses)
         .map_err(thunder_orchard::state::Error::from)?;
+    let (coinbase_heights, deposit_main_heights) = {
+        let mut coinbase_heights = HashMap::new();
+        let mut deposit_main_heights = HashMap::new();
+        for outpoint in utxos.keys() {
+            match outpoint {
+                OutPoint::Coinbase { txid, vout: _ } => {
+                    let height = node
+                        .state()
+                        .coinbase_height
+                        .get(&node_rotxn, txid)
+                        .map_err(|err| {
+                            node::Error::from(state::Error::from(err))
+                        })?;
+                    coinbase_heights.insert(*txid, height);
+                }
+                OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
+                    let height = node
+                        .state()
+                        .deposit_mainchain_height
+                        .get(&node_rotxn, txid)
+                        .map_err(|err| {
+                            node::Error::from(state::Error::from(err))
+                        })?;
+                    deposit_main_heights.insert(*txid, height);
+                }
+                OutPoint::Regular { .. } => (),
+            }
+        }
+        (coinbase_heights, deposit_main_heights)
+    };
     let outpoints: Vec<_> = {
         let mut outpoints: Vec<_> =
             wallet.get_utxos(&wallet_rwtxn)?.into_keys().collect();
@@ -146,7 +177,12 @@ fn update_wallet<'a>(
         .map(|(outpoint, spent_output)| (outpoint, spent_output.inpoint))
         .collect();
     drop(node_rotxn);
-    let () = wallet.put_utxos_confirmed(&mut wallet_rwtxn, &utxos)?;
+    let () = wallet.put_utxos_confirmed(
+        &mut wallet_rwtxn,
+        &coinbase_heights,
+        &deposit_main_heights,
+        &utxos,
+    )?;
     let () = wallet.spend_utxos_confirmed(&mut wallet_rwtxn, &spent)?;
     tracing::debug!("finished wallet update");
     Ok(wallet_rwtxn)

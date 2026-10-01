@@ -232,7 +232,7 @@ fn forged_anchor_rejected_in_block() -> anyhow::Result<()> {
     {
         let rotxn = env.read_txn()?;
         let err = state
-            .validate_transaction(&rotxn, &batch_verification_ctxt, &auth_tx)
+            .validate_transaction(&rotxn, &batch_verification_ctxt, 0, &auth_tx)
             .expect_err("mempool must reject forged anchor");
         anyhow::ensure!(matches!(
             err,
@@ -267,7 +267,7 @@ fn forged_anchor_rejected_in_block() -> anyhow::Result<()> {
     {
         let rotxn = env.read_txn()?;
         let err = state
-            .validate_block(&rotxn, &batch_verification_ctxt, &header, &body)
+            .validate_block(&rotxn, &batch_verification_ctxt, &header, 0, &body)
             .expect_err("block path must reject forged anchor");
         anyhow::ensure!(matches!(
             err,

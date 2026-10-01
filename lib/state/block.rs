@@ -26,6 +26,7 @@ pub fn validate(
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
+    prev_main_height: u32,
     body: &Body,
 ) -> Result<bitcoin::Amount, Error> {
     let tip_hash = state.try_get_tip(rotxn)?;
@@ -138,7 +139,11 @@ pub fn validate(
         total_fees = total_fees
             .checked_add(
                 state
-                    .validate_filled_transaction(filled_transaction)
+                    .validate_filled_transaction(
+                        rotxn,
+                        prev_main_height,
+                        filled_transaction,
+                    )
                     .map_err(|err| Error::ValidateFilledTransaction {
                         source: err,
                         txid,
@@ -181,6 +186,7 @@ pub fn prevalidate(
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
+    prev_main_height: u32,
     body: &Body,
 ) -> Result<PrevalidatedBlock, Error> {
     let tip_hash = state.try_get_tip(rotxn)?;
@@ -293,7 +299,11 @@ pub fn prevalidate(
         total_fees = total_fees
             .checked_add(
                 state
-                    .validate_filled_transaction(filled_transaction)
+                    .validate_filled_transaction(
+                        rotxn,
+                        prev_main_height,
+                        filled_transaction,
+                    )
                     .map_err(|err| Error::ValidateFilledTransaction {
                         source: err,
                         txid,
@@ -441,6 +451,11 @@ pub fn connect_prevalidated(
     // Update tip and height using precomputed values (no redundant DB reads)
     let block_hash = header.hash();
     state.tip.put(rwtxn, &(), &block_hash)?;
+    state.coinbase_height.put(
+        rwtxn,
+        &coinbase_txid,
+        &prevalidated.next_height,
+    )?;
     state.height.put(rwtxn, &(), &prevalidated.next_height)?;
 
     // Apply accumulator diff and update orchard state
@@ -591,6 +606,7 @@ pub fn connect(
     let block_hash = header.hash();
     let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
     state.tip.put(rwtxn, &(), &block_hash)?;
+    state.coinbase_height.put(rwtxn, &coinbase_txid, &height)?;
     state.height.put(rwtxn, &(), &height)?;
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
@@ -700,7 +716,6 @@ pub fn disconnect_tip(
         };
         return Err(Error::InvalidBody(err));
     }
-    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     tracing::debug!("Got acc");
     let mut accumulator_diff = AccumulatorDiff::default();
@@ -709,27 +724,30 @@ pub fn disconnect_tip(
         disconnect_transaction(state, rwtxn, tx, &mut accumulator_diff)
     })?;
     // delete coinbase UTXOs, last-to-first
-    body.coinbase
-        .outputs
-        .iter()
-        .enumerate()
-        .rev()
-        .try_for_each(|(vout, output)| {
-            let outpoint = OutPoint::Coinbase {
-                txid: coinbase_txid,
-                vout: vout as u32,
-            };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.remove((&pointed_output).into());
-            if state.utxos.delete(rwtxn, &OutPointKey::from(outpoint))? {
-                Ok::<_, Error>(())
-            } else {
-                Err(error::NoUtxo { outpoint }.into())
-            }
-        })?;
+    {
+        let coinbase_txid = header.compute_coinbase_txid();
+        body.coinbase
+            .outputs
+            .iter()
+            .enumerate()
+            .rev()
+            .try_for_each(|(vout, output)| {
+                let outpoint = OutPoint::Coinbase {
+                    txid: coinbase_txid,
+                    vout: vout as u32,
+                };
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_diff.remove((&pointed_output).into());
+                if state.utxos.delete(rwtxn, &OutPointKey::from(outpoint))? {
+                    Ok::<_, Error>(())
+                } else {
+                    Err(error::NoUtxo { outpoint }.into())
+                }
+            })?;
+    }
     let height = state
         .try_get_height(rwtxn)?
         .expect("Height should not be None");
@@ -866,20 +884,26 @@ mod test {
         // Assemble body.
         let body = Body::new(vec![authorized], Coinbase::default());
 
+        let main_height = 9999;
+
         // Compute the header the validator expects:
         //   merkle_root from the filled tx, roots = post-block accumulator
         //   (B's leaf removed, C's leaf inserted) -- exactly the diff validate
         //   builds from the SUPPLIED utxo_hash.
-        let filled = {
+        {
             let rotxn = env.read_txn()?;
-            state.fill_transaction(
+            let filled = state.fill_transaction(
                 &rotxn,
                 Cow::Borrowed(&body.transactions[0]),
-            )?
+            )?;
+            // tx validation REJECTS the outpoint/utxo_hash mismatch.
+            anyhow::ensure!(
+                state
+                    .validate_filled_transaction(&rotxn, main_height, &filled)
+                    .is_err()
+            );
         };
 
-        // tx validation REJECTS the outpoint/utxo_hash mismatch.
-        anyhow::ensure!(state.validate_filled_transaction(&filled).is_err());
         let merkle_root = body.compute_merkle_root();
         let mut post_accumulator = seeded_accumulator()?;
         {
@@ -897,7 +921,7 @@ mod test {
         let header = Header {
             merkle_root,
             prev_side_hash: None,
-            prev_main_hash: bitcoin::BlockHash::from_byte_array([0u8; 32]),
+            prev_main_hash: bitcoin::BlockHash::from_byte_array([0x55u8; 32]),
             roots: post_accumulator.get_roots(),
         };
 
@@ -910,6 +934,7 @@ mod test {
                         &rotxn,
                         &batch_verification_ctxt,
                         &header,
+                        main_height,
                         &body
                     )
                     .is_err(),
