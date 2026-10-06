@@ -6986,11 +6986,13 @@ dependencies = [
  "futures",
  "jsonrpsee",
  "libtest-mimic",
+ "rcgen",
  "reserve-port",
  "thiserror 2.0.19",
  "thunder_orchard",
  "thunder_orchard_app_rpc_api",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-indicatif",
  "tracing-subscriber",
@@ -7257,11 +7259,13 @@ dependencies = [
  "socket2",
  "sync_wrapper",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tower",
  "tower-layer",
  "tower-service",
  "tracing",
+ "webpki-roots 1.0.5",
 ]
 
 [[package]]
