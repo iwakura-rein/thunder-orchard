@@ -143,11 +143,7 @@ fn deposit_withdraw_roundtrip_trial(
             };
             deposit_withdraw_roundtrip(
                 post_setup,
-                Init {
-                    thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
-                    data_dir_suffix: None,
-                    rpc_client_request_timeout: None,
-                },
+                Init::new(bin_paths.thunder_orchard()?.clone()),
                 res_tx,
             )
             .await

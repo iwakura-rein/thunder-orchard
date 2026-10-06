@@ -48,9 +48,8 @@ async fn setup(
     };
     let sidechain_sender = PostSetup::setup(
         Init {
-            thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
             data_dir_suffix: Some("sender".to_owned()),
-            rpc_client_request_timeout: None,
+            ..Init::new(bin_paths.thunder_orchard()?.clone())
         },
         &enforcer_post_setup,
         res_tx.clone(),
@@ -59,9 +58,8 @@ async fn setup(
     tracing::info!("Setup thunder-orchard send node successfully");
     let sidechain_syncer = PostSetup::setup(
         Init {
-            thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
             data_dir_suffix: Some("syncer".to_owned()),
-            rpc_client_request_timeout: None,
+            ..Init::new(bin_paths.thunder_orchard()?.clone())
         },
         &enforcer_post_setup,
         res_tx,
