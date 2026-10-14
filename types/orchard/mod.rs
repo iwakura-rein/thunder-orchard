@@ -1071,7 +1071,11 @@ impl<'de> Deserialize<'de> for Anchor {
         #[repr(transparent)]
         struct InvalidAnchor([u8; 32]);
 
-        let bytes: [u8; 32] = Deserialize::deserialize(deserializer)?;
+        let bytes: [u8; 32] = if deserializer.is_human_readable() {
+            const_hex::serde::deserialize(deserializer)?
+        } else {
+            <[u8; 32] as Deserialize>::deserialize(deserializer)?
+        };
         match orchard::tree::Anchor::from_bytes(bytes).into_option() {
             Some(anchor) => Ok(Self(anchor)),
             None => {
