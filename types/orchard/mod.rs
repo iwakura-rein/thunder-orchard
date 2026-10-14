@@ -107,9 +107,11 @@ where
     Ord,
     PartialEq,
     PartialOrd,
+    ToSchema,
     TransparentWrapper,
 )]
 #[repr(transparent)]
+#[schema(value_type = String)]
 pub struct Nullifier(
     #[borsh(serialize_with = "borsh_serialize_nullifier")]
     orchard::note::Nullifier,
@@ -1375,6 +1377,10 @@ struct NoteRepr {
 pub struct Note(orchard::Note);
 
 impl Note {
+    pub fn recipient(&self) -> Address {
+        Address::wrap(self.0.recipient())
+    }
+
     pub fn value(&self) -> bitcoin::Amount {
         bitcoin::Amount::from_sat(self.0.value().inner())
     }
