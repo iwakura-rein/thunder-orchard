@@ -177,6 +177,25 @@ fn deepest_available_anchor_depth<E>(
     }
 }
 
+/// Returns the witness of the leaf at `position` as of the checkpoint at
+/// `checkpoint_depth`, or `None` if the leaf is newer than that checkpoint.
+fn try_witness_at_checkpoint_depth(
+    tree: &ShardTree<'_, WalletEnv>,
+    position: incrementalmerkletree::Position,
+    checkpoint_depth: usize,
+) -> Result<Option<orchard::MerklePath>, orchard::ShardTreeError> {
+    let Some(checkpoint_position) =
+        tree.max_leaf_position(Some(checkpoint_depth))?
+    else {
+        return Ok(None);
+    };
+    if position > checkpoint_position {
+        return Ok(None);
+    }
+    let path = tree.witness_at_checkpoint_depth(position, checkpoint_depth)?;
+    Ok(path.map(Into::into))
+}
+
 /// Marker type for Wallet Env
 pub struct WalletEnv;
 
@@ -637,12 +656,14 @@ impl Wallet {
                 self.orchard_notes.get(txn.as_ref(), &nullifier)?;
             // Skip notes that are newer than the anchor checkpoint: they are
             // not witnessable against the chosen anchor yet.
-            let Some(path) = commitments_tree
-                .witness_at_checkpoint_depth(position.0, anchor_depth)?
+            let Some(path) = try_witness_at_checkpoint_depth(
+                &commitments_tree,
+                position.0,
+                anchor_depth,
+            )?
             else {
                 continue;
             };
-            let path = path.into();
             total =
                 total.checked_add(note.value()).ok_or(AmountOverflowError)?;
             selected.insert(nullifier, (note, path));
@@ -965,9 +986,12 @@ impl Wallet {
                         let root = shard_tree
                             .root_at_checkpoint_depth(Some(depth))?
                             .expect("checkpoint exists at chosen depth");
-                        shard_tree
-                            .witness_at_checkpoint_depth(position.0, depth)?
-                            .map(|path| (root, spend_note, path))
+                        try_witness_at_checkpoint_depth(
+                            &shard_tree,
+                            position.0,
+                            depth,
+                        )?
+                        .map(|path| (root, spend_note, path))
                     }
                     None => None,
                 }
@@ -979,7 +1003,7 @@ impl Wallet {
                     let flags = orchard::BundleFlags::ENABLED;
                     let mut builder =
                         orchard::Builder::new(flags, false, root.into());
-                    builder.add_spend(fvk, spend_note, merkle_path.into())?;
+                    builder.add_spend(fvk, spend_note, merkle_path)?;
                     builder
                 } else {
                     let flags = orchard::BundleFlags::SPENDS_DISABLED;
