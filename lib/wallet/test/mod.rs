@@ -1,4 +1,9 @@
-use crate::wallet::Wallet;
+use bytemuck::TransparentWrapper as _;
+
+use crate::{
+    types::orchard::{self, PositionWrapper},
+    wallet::Wallet,
+};
 
 #[test]
 fn test_get_or_generate_last_address() -> anyhow::Result<()> {
@@ -72,6 +77,90 @@ fn test_get_or_generate_last_address() -> anyhow::Result<()> {
 
     // Clean up
     let _unused = std::fs::remove_dir_all(&test_dir);
+    Ok(())
+}
+
+fn random_note(recipient: orchard::Address, sats: u64) -> orchard::Note {
+    let rho = loop {
+        let bytes: [u8; 32] = rand::random();
+        if let Some(rho) =
+            ::orchard::note::Rho::from_bytes(&bytes).into_option()
+        {
+            break rho;
+        }
+    };
+    let rseed = loop {
+        let bytes: [u8; 32] = rand::random();
+        if let Some(rseed) =
+            ::orchard::note::RandomSeed::from_bytes(bytes, &rho).into_option()
+        {
+            break rseed;
+        }
+    };
+    let note = ::orchard::Note::from_parts(
+        recipient.0,
+        ::orchard::value::NoteValue::from_raw(sats),
+        rho,
+        rseed,
+    )
+    .into_option()
+    .expect("valid note");
+    orchard::Note::wrap(note)
+}
+
+#[test]
+fn test_get_orchard_notes() -> anyhow::Result<()> {
+    let temp_dir = temp_dir::TempDir::with_prefix("thunder-orchard-wallet")?;
+    let wallet = Wallet::new(temp_dir.path())?;
+    wallet.set_seed(&[1u8; 64])?;
+    let mut rwtxn = wallet.env().write_txn()?;
+    let fvk = orchard::FullViewingKey::from(
+        &wallet.get_orchard_spending_key(&rwtxn)?,
+    );
+    let recipient = wallet.get_new_orchard_address(&mut rwtxn)?;
+    let confirmed =
+        [random_note(recipient, 1_000), random_note(recipient, 2_000)];
+    for (position, note) in confirmed.iter().enumerate() {
+        wallet.orchard_notes.put(
+            &mut rwtxn,
+            &note.nullifier(&fvk),
+            &(*note, PositionWrapper((position as u64).into())),
+        )?;
+    }
+    let unconfirmed = random_note(recipient, 4_000);
+    wallet.orchard_notes_unconfirmed.put(
+        &mut rwtxn,
+        &unconfirmed.nullifier(&fvk),
+        &unconfirmed,
+    )?;
+    rwtxn.commit()?;
+
+    let rotxn = wallet.env().read_txn()?;
+    let notes = wallet.get_orchard_notes(&rotxn)?;
+    let mut expected: Vec<_> = confirmed
+        .iter()
+        .map(|note| (note.nullifier(&fvk), note.value()))
+        .collect();
+    expected.sort_by_key(|(nullifier, _)| *nullifier);
+    let actual: Vec<_> = notes
+        .iter()
+        .map(|(nullifier, note)| (*nullifier, note.value()))
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(notes.values().all(|note| note.recipient() == recipient));
+    let notes_sum: bitcoin::Amount =
+        notes.values().map(|note| note.value()).sum();
+    assert_eq!(notes_sum, wallet.get_balance()?.available_shielded);
+
+    let notes_unconfirmed = wallet.get_orchard_notes_unconfirmed(&rotxn)?;
+    let actual: Vec<_> = notes_unconfirmed
+        .iter()
+        .map(|(nullifier, note)| (*nullifier, note.value()))
+        .collect();
+    assert_eq!(
+        actual,
+        vec![(unconfirmed.nullifier(&fvk), unconfirmed.value())]
+    );
     Ok(())
 }
 

@@ -1580,6 +1580,30 @@ impl Wallet {
         Ok(balance)
     }
 
+    /// Confirmed Orchard notes. Their sum is `available_shielded` in
+    /// [`Self::get_balance`].
+    pub fn get_orchard_notes(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<BTreeMap<orchard::Nullifier, orchard::Note>, Error> {
+        let notes = self
+            .orchard_notes
+            .iter(rotxn)?
+            .map(|(nullifier, (note, _))| Ok((nullifier, note)))
+            .collect()?;
+        Ok(notes)
+    }
+
+    /// Orchard notes received in unconfirmed transactions.
+    /// [`Self::get_balance`] does not count them.
+    pub fn get_orchard_notes_unconfirmed(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<BTreeMap<orchard::Nullifier, orchard::Note>, Error> {
+        let notes = self.orchard_notes_unconfirmed.iter(rotxn)?.collect()?;
+        Ok(notes)
+    }
+
     pub fn get_stxos(
         &self,
         rotxn: &RoTxn,
