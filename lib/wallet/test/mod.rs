@@ -235,3 +235,111 @@ mod anchor_depth {
         }
     }
 }
+
+mod young_note {
+    use anyhow::Context as _;
+    use bitcoin::hashes::Hash as _;
+
+    use crate::{types::Coinbase, wallet::*};
+
+    fn connect_block(
+        wallet: &Wallet,
+        transactions: Vec<Transaction>,
+    ) -> anyhow::Result<()> {
+        let rwtxn = wallet.env().write_txn()?;
+        let body = Body {
+            coinbase: Coinbase {
+                memo: Vec::new(),
+                outputs: Vec::new().into(),
+            },
+            transactions,
+            authorizations: Vec::new(),
+        };
+        let header = Header {
+            merkle_root: body.compute_merkle_root(),
+            prev_side_hash: wallet.try_get_tip(&rwtxn)?,
+            prev_main_hash: bitcoin::BlockHash::all_zeros(),
+            roots: Vec::new(),
+        };
+        let rwtxn = wallet.connect_orchard_block(rwtxn, &header, &body)?;
+        rwtxn.commit()?;
+        Ok(())
+    }
+
+    fn shield_transaction(
+        wallet: &Wallet,
+        value: Amount,
+    ) -> anyhow::Result<Transaction> {
+        let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
+        let mut rwtxn = wallet.env().write_txn()?;
+        let address = wallet.get_new_orchard_address(&mut rwtxn)?;
+        let spending_key = wallet.get_orchard_spending_key(&rwtxn)?;
+        rwtxn.commit()?;
+        let ovk = orchard::FullViewingKey::from(&spending_key)
+            .to_ovk(orchard::Scope::Internal);
+        let mut builder = orchard::Builder::new(
+            orchard::BundleFlags::SPENDS_DISABLED,
+            true,
+            orchard::Anchor::empty_tree(),
+        );
+        builder.add_output(
+            Some(ovk.clone()),
+            address,
+            orchard::NoteValue::from_raw(value.to_sat()),
+            [0u8; 512],
+        )?;
+        let (bundle, _metadata) = builder
+            .build(&mut rng, Some(ovk))?
+            .context("builder returned no bundle")?;
+        let transaction = transaction::MissingOrchardAuthorization {
+            inputs: Vec::new().into(),
+            proof: Accumulator::default().prove(&[])?,
+            outputs: Vec::new().into(),
+            orchard_bundle: Some(bundle.create_proof(&mut rng)?),
+        };
+        let rotxn = wallet.env().read_txn()?;
+        Ok(wallet.authorize_orchard_bundle(&mut rng, &rotxn, transaction)?)
+    }
+
+    fn select_shielded_value(
+        wallet: &Wallet,
+        value: Amount,
+    ) -> Result<Amount, Error> {
+        let mut rng = rand::rngs::ChaCha20Rng::from_rng(&mut rand::rng());
+        let rwtxn = wallet.env().write_txn()?;
+        let (_txn, total, _anchor, _coins) = wallet.select_shielded_coins(
+            &mut rng,
+            ShardTreeDbTxn::Rw(rwtxn),
+            value,
+        )?;
+        Ok(total)
+    }
+
+    #[test]
+    fn note_newer_than_anchor_is_skipped() -> anyhow::Result<()> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let test_dir = std::env::temp_dir()
+            .join(format!("thunder_orchard_test_young_note_{nanos}"));
+        let wallet = Wallet::new(&test_dir)?;
+        wallet.set_seed(&[1u8; 64])?;
+
+        for _ in 0..ANCHOR_CHECKPOINT_DEPTH {
+            connect_block(&wallet, Vec::new())?;
+        }
+        let value = Amount::from_sat(100_000);
+        connect_block(&wallet, vec![shield_transaction(&wallet, value)?])?;
+
+        let res = select_shielded_value(&wallet, value);
+        assert!(matches!(res, Err(Error::NotEnoughFunds)), "{res:?}");
+
+        for _ in 0..ANCHOR_CHECKPOINT_DEPTH {
+            connect_block(&wallet, Vec::new())?;
+        }
+        assert_eq!(select_shielded_value(&wallet, value)?, value);
+
+        let _unused = std::fs::remove_dir_all(&test_dir);
+        Ok(())
+    }
+}
