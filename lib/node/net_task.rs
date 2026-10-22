@@ -5,10 +5,10 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use error_fatality::{Nested as _, Split};
+use error_fatality::{Fatality as _, Nested as _, Split};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{
     StreamExt,
@@ -19,6 +19,7 @@ use futures::{
     stream,
 };
 use nonempty::NonEmpty;
+use rand::{RngExt as _, SeedableRng, rngs::ChaCha20Rng};
 use sneed::{DbError, EnvError, RwTxn, RwTxnError};
 use tokio::task::{self, JoinHandle};
 use tokio_stream::StreamNotifyClose;
@@ -32,18 +33,58 @@ use crate::{
         peer_message,
     },
     node::{
+        FatalErrorTx,
         error::net_task::{self as error, Error},
         mainchain_task::{self, MainchainTaskHandle},
+        supervise,
     },
     state::{self, State},
     types::{
         BmmResult, Body, Header, Tip,
         authorization::BatchVerificationContext,
-        net::ResolvedPeerAddress,
+        net::{PeerAddress, ResolvedPeerAddress},
         proto::mainchain::{self, Event as MainchainBlockEvent},
     },
     util::{ErrorChain, join_set},
 };
+
+/// Reconnect delays for one peer address, so that a connection that keeps
+/// failing is retried less and less often instead of every 10s forever.
+#[derive(Debug, Default)]
+struct ReconnectBackoff {
+    /// Reconnects in a row that did not stay up for [`Self::STABLE`]
+    failures: u32,
+    /// When the last reconnect was scheduled to happen
+    last_dial: Option<Instant>,
+}
+
+impl ReconnectBackoff {
+    const BASE: Duration = Duration::from_secs(10);
+    const MAX: Duration = Duration::from_secs(10 * 60);
+    /// A connection that stayed up at least this long resets the backoff
+    const STABLE: Duration = Duration::from_secs(5 * 60);
+
+    /// Delay before the next reconnect: [`Self::BASE`], doubled for each
+    /// failure in a row, capped at [`Self::MAX`], plus up to 25% jitter so
+    /// that two peers do not keep retrying in step.
+    fn next_delay<R>(&mut self, now: Instant, mut rng: R) -> Duration
+    where
+        R: rand::CryptoRng,
+    {
+        if self.last_dial.is_none_or(|last_dial| {
+            now.saturating_duration_since(last_dial) >= Self::STABLE
+        }) {
+            self.failures = 0;
+        }
+        let factor = 1u32.checked_shl(self.failures).unwrap_or(u32::MAX);
+        let delay = Self::BASE.saturating_mul(factor).min(Self::MAX);
+        let jitter = rng.random_range(0f64..=0.25);
+        let delay = delay.mul_f64(1.0 + jitter);
+        self.failures = self.failures.saturating_add(1);
+        self.last_dial = Some(now + delay);
+        delay
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn connect_tip_(
@@ -221,10 +262,6 @@ pub(in crate::node) fn disconnect_tip_(
     Ok(())
 }
 
-fn is_fatal_reorg_error(err: &Error) -> bool {
-    !matches!(err, Error::State(_))
-}
-
 /// Re-org to the specified tip, if it is better than the current tip.
 /// The new tip block and all ancestor blocks must exist in the node's archive.
 /// A result of `Ok(true)` indicates a successful re-org.
@@ -375,7 +412,7 @@ fn reorg_to_tip<ThreadLocalStorage>(
         ) {
             Ok(()) => (),
             Err(err) => {
-                if !is_fatal_reorg_error(&err) {
+                if !err.is_fatal() {
                     // The stored body for this block failed validation (e.g. a peer
                     // supplied a body whose contents do not match the header's merkle
                     // root). Abort the reorg and discard the invalid body from the
@@ -466,6 +503,7 @@ struct NetTask {
     /// to reorg to the new tip, on the corresponding oneshot receiver.
     new_tip_ready_tx: UnboundedSender<NewTipReadyMessage>,
     peer_info_rx: PeerInfoRx,
+    rng: ChaCha20Rng,
 }
 
 impl NetTask {
@@ -891,14 +929,25 @@ impl NetTask {
                 block_hash: best_side_tip.block_hash,
                 main_block_hash: best_side_tip.info.main_block_hash,
             };
-            let _: bool = reorg_to_tip(
+            match reorg_to_tip(
                 &ctxt.env,
                 &ctxt.archive,
                 &ctxt.net.batch_verification_ctxt,
                 &ctxt.mempool,
                 &ctxt.state,
                 best_side_tip,
-            )?;
+            )
+            .into_nested()?
+            {
+                Ok(completed_reorg) => {
+                    let _: bool = completed_reorg;
+                }
+                Err(err) => tracing::warn!(
+                    ?best_side_tip,
+                    err = format!("{:#}", ErrorChain::new(&err)),
+                    "rejecting invalid best side tip"
+                ),
+            }
         }
         Ok(())
     }
@@ -968,7 +1017,7 @@ impl NetTask {
         }
     }
 
-    async fn run(self) -> Result<(), Error> {
+    async fn run(mut self) -> Result<(), Error> {
         tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
@@ -1068,6 +1117,9 @@ impl NetTask {
             mainchain_task::Request,
             HashSet<(SocketAddr, PeerStateId)>,
         >::new();
+        // Backoff state for peers that this node dialed
+        let mut reconnect_backoff =
+            HashMap::<PeerAddress, ReconnectBackoff>::new();
         while let Some(mailbox_item) = mailbox_stream.next().await {
             tracing::trace!(?mailbox_item, "received new mailbox item");
             match mailbox_item {
@@ -1152,12 +1204,10 @@ impl NetTask {
                             &self.ctxt.state,
                             new_tip,
                         )
-                    });
+                    })
+                    .into_nested()?;
                     let reorg_applied = match reorg_result {
                         Ok(applied) => applied,
-                        Err(err) if is_fatal_reorg_error(&err) => {
-                            return Err(err);
-                        }
                         // an invalid block must not kill the net task; drop the
                         // peer and keep running
                         Err(err) => {
@@ -1203,25 +1253,54 @@ impl NetTask {
                                 err = err_msg,
                                 "Peer connection error",
                             );
-                            // Attempt to reconnect if a valid message was
-                            // received successfully
-                            let received_msg_successfully =
+                            let conn_info =
                                 self.ctxt.net.try_with_active_peer_connection(
                                     addr,
                                     |conn_handle| {
-                                        conn_handle.received_msg_successfully()
+                                        (
+                                            conn_handle
+                                                .received_msg_successfully(),
+                                            conn_handle.is_outbound(),
+                                        )
                                     },
                                 );
                             let () = self.ctxt.net.remove_active_peer(addr);
-                            let Some(received_msg_successfully) =
-                                received_msg_successfully
+                            let Some((received_msg_successfully, outbound)) =
+                                conn_info
                             else {
                                 continue;
                             };
+                            // Leave reconnecting to the side that dialed.
+                            // The address of an inbound peer is its source
+                            // address; dialing it back collides with the
+                            // peer's own reconnect, and would save the
+                            // address to known peers.
+                            if !outbound {
+                                tracing::debug!(
+                                    %addr,
+                                    "inbound peer disconnected, not reconnecting"
+                                );
+                                continue;
+                            }
+                            // Attempt to reconnect if a valid message was
+                            // received successfully
                             if received_msg_successfully && err.may_reconnect()
                             {
+                                let delay = reconnect_backoff
+                                    .entry(
+                                        resolved_peer_addr
+                                            .as_peer_address()
+                                            .to_owned(),
+                                    )
+                                    .or_default()
+                                    .next_delay(Instant::now(), &mut self.rng);
+                                tracing::info!(
+                                    %addr,
+                                    ?delay,
+                                    "reconnecting to peer after delay"
+                                );
                                 reconnect_peer_spawner.spawn(async move {
-                                    tokio::time::sleep(RECONNECT_DELAY).await;
+                                    tokio::time::sleep(delay).await;
                                     resolved_peer_addr
                                 });
                             } else if let (_, Some(resolved_peer_addr)) =
@@ -1365,7 +1444,7 @@ pub(super) struct NetTaskHandle {
 
 impl NetTaskHandle {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new<R>(
         runtime: &tokio::runtime::Runtime,
         env: sneed::Env<heed::WithoutTls>,
         archive: Archive,
@@ -1374,8 +1453,13 @@ impl NetTaskHandle {
         mempool: MemPool,
         net: Net,
         peer_info_rx: PeerInfoRx,
+        mut rng: R,
         state: State,
-    ) -> Self {
+        fatal_error_tx: FatalErrorTx,
+    ) -> Self
+    where
+        R: rand::CryptoRng,
+    {
         let ctxt = NetTaskContext {
             env,
             archive,
@@ -1397,12 +1481,9 @@ impl NetTaskHandle {
             new_tip_ready_tx: new_tip_ready_tx.clone(),
             new_tip_ready_rx,
             peer_info_rx,
+            rng: ChaCha20Rng::from_rng(&mut rng),
         };
-        let task = runtime.spawn(async {
-            if let Err(err) = task.run().await {
-                tracing::error!("Net task error: {:#}", ErrorChain::new(&err));
-            }
-        });
+        let task = runtime.spawn(supervise("Net", task.run(), fatal_error_tx));
         NetTaskHandle {
             task: Arc::new(task),
             new_tip_ready_tx,
@@ -1442,21 +1523,119 @@ impl Drop for NetTaskHandle {
 
 #[cfg(test)]
 mod test {
+    use std::{collections::HashSet, net::Ipv4Addr};
+
+    use bitcoin::hashes::Hash as _;
+    use error_fatality::Fatality as _;
+
     use crate::{
-        node::net_task::{Error, is_fatal_reorg_error},
+        archive::side_tips::BmmCommitment,
+        node::{
+            Config, Node,
+            net_task::{Error, NetTask, NetTaskContext},
+        },
         state,
+        types::{
+            Body, Coinbase, Header, MerkleRoot, Network,
+            proto::mainchain::{
+                BlockHeaderInfo, Event as MainchainBlockEvent, ValidatorClient,
+            },
+        },
     };
+
+    #[test]
+    fn an_invalid_best_side_tip_does_not_stop_the_net_task()
+    -> anyhow::Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            let temp_dir = temp_dir::TempDir::new()?;
+            let channel =
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:1")
+                    .connect_lazy();
+            let (fatal_error_tx, _fatal_error_rx) =
+                futures::channel::mpsc::unbounded();
+            let node = Node::new(
+                Config {
+                    datadir: temp_dir.path().to_owned(),
+                    bind_addr: (Ipv4Addr::LOCALHOST, 0).into(),
+                    magic_bytes_override: None,
+                    network: Network::Regtest,
+                    add_peers: HashSet::new(),
+                    server_names: HashSet::new(),
+                },
+                ValidatorClient::new(channel),
+                None,
+                &mut rand::rng(),
+                &runtime,
+                fatal_error_tx,
+            )?;
+            node.task_handles.net.task.abort();
+            while !node.task_handles.net.task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+            let main_header = BlockHeaderInfo {
+                block_hash: bitcoin::BlockHash::from_byte_array([1; 32]),
+                prev_block_hash: bitcoin::BlockHash::all_zeros(),
+                height: 0,
+                work: bitcoin::Target::MAX.to_work(),
+            };
+            let header = Header {
+                merkle_root: MerkleRoot::from([7; 32]),
+                prev_side_hash: None,
+                prev_main_hash: main_header.prev_block_hash,
+                roots: Vec::new(),
+            };
+            let block_hash = header.hash();
+            let body = Body {
+                coinbase: Coinbase::default(),
+                transactions: Vec::new(),
+                authorizations: Vec::new(),
+            };
+            let mut rwtxn = node.env.write_txn()?;
+            node.archive.put_header(&mut rwtxn, &header)?;
+            node.archive.put_body(&mut rwtxn, block_hash, &body)?;
+            node.archive.side_tips().connect_mainchain_tip(
+                &mut rwtxn,
+                main_header,
+                Some(BmmCommitment {
+                    sidechain_block_hash: block_hash,
+                    sidechain_header_data: (&header).into(),
+                }),
+            )?;
+            rwtxn.commit()?;
+            let ctxt = NetTaskContext {
+                env: node.env.clone(),
+                archive: node.archive.clone(),
+                mainchain_task: node.task_handles.mainchain.clone(),
+                mempool: node.mempool.clone(),
+                net: node.net.clone(),
+                state: node.state.clone(),
+            };
+            for _ in 0..2 {
+                NetTask::handle_mainchain_block_event(
+                    &ctxt,
+                    MainchainBlockEvent::DisconnectBlock {
+                        block_hash: main_header.block_hash,
+                    },
+                )?;
+            }
+            let rotxn = node.env.read_txn()?;
+            assert!(node.archive.try_get_body(&rotxn, block_hash)?.is_none());
+            assert!(node.state.try_get_tip(&rotxn)?.is_none());
+            Ok(())
+        })
+    }
 
     // a peer's invalid block (value out > value in) must not be fatal
     #[test]
     fn invalid_peer_block_is_not_fatal() {
         let err = Error::State(state::Error::NotEnoughFees);
-        assert!(!is_fatal_reorg_error(&err));
+        assert!(!err.is_fatal());
     }
 
     // local infrastructure errors stay fatal
     #[test]
     fn infrastructure_error_is_fatal() {
-        assert!(is_fatal_reorg_error(&Error::PeerInfoRxClosed));
+        assert!(Error::PeerInfoRxClosed.is_fatal());
     }
 }

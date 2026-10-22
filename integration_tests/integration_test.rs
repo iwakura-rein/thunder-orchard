@@ -7,13 +7,14 @@ use bip300301_enforcer_integration_tests::{
     },
     util::{AsyncTrial, TestFailureCollector, TestFileRegistry},
 };
-use bip300301_enforcer_lib::bins::CommandExt;
 use futures::{FutureExt, channel::mpsc::UnboundedSender, future::BoxFuture};
+use jsonrpsee::{core::client::ClientT as _, rpc_params};
 use thunder_orchard_app_rpc_api::node::RpcClient as _;
 
 use crate::{
     block_template::block_template_trial,
     ibd::{ibd_trial, reorg_across_deposit_trial},
+    mainchain_tls::mainchain_tls_trial,
     setup::{Init, PostSetup},
     transfers::transfers_trial,
     unknown_withdrawal::unknown_withdrawal_trial,
@@ -90,10 +91,9 @@ pub async fn deposit_withdraw_roundtrip_task(
     )
     .await?;
     tracing::info!("Withdrawal succeeded");
-    let mainchain_block_count = post_setup
-        .bitcoin_cli
-        .command::<String, _, String, _, _>([], "getblockcount", [])
-        .run_utf8()
+    let mainchain_block_count: u32 = post_setup
+        .bitcoind_client
+        .request("getblockcount", rpc_params![])
         .await?;
     let sidechain_block_count = sidechain.rpc_client.getblockcount().await?;
     tracing::info!(%mainchain_block_count, sidechain_block_count);
@@ -105,23 +105,40 @@ async fn deposit_withdraw_roundtrip(
     init: Init,
     res_tx: UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
+    use thunder_orchard_app_rpc_api::wallet::RpcClient as _;
+
     let sidechain_post_setup =
         deposit_withdraw_roundtrip_task(&mut post_setup, res_tx, init).await?;
+    // A transfer mined in the next block stays findable via `get_transaction`
+    // as later blocks build on it.
+    let rpc = &sidechain_post_setup.rpc_client;
+    let dest = rpc.get_new_transparent_address().await?;
+    let txid = rpc
+        .create_transparent_transfer(dest, 1_000_000, 1_000)
+        .await?;
+    let mut included_in = None;
     // check that everything is ok after BMM'ing 3 blocks
-    let mut block_count_pre =
-        sidechain_post_setup.rpc_client.getblockcount().await?;
-    sidechain_post_setup.bmm_single(&mut post_setup).await?;
-    let mut block_count_post =
-        sidechain_post_setup.rpc_client.getblockcount().await?;
-    anyhow::ensure!(block_count_post == block_count_pre + 1);
-    block_count_pre = block_count_post;
-    sidechain_post_setup.bmm_single(&mut post_setup).await?;
-    block_count_post = sidechain_post_setup.rpc_client.getblockcount().await?;
-    anyhow::ensure!(block_count_post == block_count_pre + 1);
-    block_count_pre = block_count_post;
-    sidechain_post_setup.bmm_single(&mut post_setup).await?;
-    block_count_post = sidechain_post_setup.rpc_client.getblockcount().await?;
-    anyhow::ensure!(block_count_post == block_count_pre + 1);
+    for _ in 0..3 {
+        let block_count_pre = rpc.getblockcount().await?;
+        sidechain_post_setup.bmm_single(&mut post_setup).await?;
+        let block_count_post = rpc.getblockcount().await?;
+        anyhow::ensure!(block_count_post == block_count_pre + 1);
+        let block_hash = rpc
+            .get_transaction(txid)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "get_transaction lost {txid} at block count {block_count_post}"
+                )
+            })?
+            .block_hash
+            .ok_or_else(|| anyhow::anyhow!("{txid} was not mined"))?;
+        let included_in = *included_in.get_or_insert(block_hash);
+        anyhow::ensure!(
+            block_hash == included_in,
+            "{txid} moved from block {included_in} to {block_hash}"
+        );
+    }
     Ok(())
 }
 
@@ -144,11 +161,7 @@ fn deposit_withdraw_roundtrip_trial(
             };
             deposit_withdraw_roundtrip(
                 post_setup,
-                Init {
-                    thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
-                    data_dir_suffix: None,
-                    rpc_client_request_timeout: None,
-                },
+                Init::new(bin_paths.thunder_orchard()?.clone()),
                 res_tx,
             )
             .await
@@ -171,6 +184,11 @@ pub fn tests(
             failure_collector.clone(),
         ),
         deposit_withdraw_roundtrip_trial(
+            bin_paths.clone(),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ),
+        mainchain_tls_trial(
             bin_paths.clone(),
             file_registry.clone(),
             failure_collector.clone(),

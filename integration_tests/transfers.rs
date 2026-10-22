@@ -49,6 +49,7 @@ impl SidechainNodes {
                 Init {
                     thunder_orchard_app: thunder_orchard_bin_path.clone(),
                     data_dir_suffix: Some(suffix.to_owned()),
+                    mainchain_tls: None,
                     // Orchard transfers can take a while to prove
                     rpc_client_request_timeout: Some(
                         std::time::Duration::from_secs(120),

@@ -1,6 +1,20 @@
+use std::collections::BTreeMap;
+
 use bitcoin::Amount;
 use serde::{Deserialize, Serialize};
+use serde_with::{MapPreventDuplicates, serde_as};
 use utoipa::ToSchema;
+
+use crate::address::TransparentAddress;
+
+/// Destinations of a transparent transfer. Each address takes a value in sats.
+#[serde_as]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(value_type = BTreeMap<String, u64>)]
+pub struct TransparentTransferDests(
+    #[serde_as(as = "MapPreventDuplicates<_, _>")]
+    pub  BTreeMap<TransparentAddress, u64>,
+);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 pub struct Balance {

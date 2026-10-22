@@ -62,9 +62,8 @@ async fn unknown_withdrawal_task(
         setup(&bin_paths.others, res_tx.clone()).await?;
     let mut sidechain_withdrawer = PostSetup::setup(
         Init {
-            thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
             data_dir_suffix: Some("withdrawer".to_owned()),
-            rpc_client_request_timeout: None,
+            ..Init::new(bin_paths.thunder_orchard()?.clone())
         },
         &enforcer_post_setup,
         res_tx.clone(),
@@ -94,9 +93,8 @@ async fn unknown_withdrawal_task(
     // New sidechain node, starting from scratch
     let mut sidechain_successor = PostSetup::setup(
         Init {
-            thunder_orchard_app: bin_paths.thunder_orchard()?.clone(),
             data_dir_suffix: Some("successor".to_owned()),
-            rpc_client_request_timeout: None,
+            ..Init::new(bin_paths.thunder_orchard()?.clone())
         },
         &enforcer_post_setup,
         res_tx,

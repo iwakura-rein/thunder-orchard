@@ -29,10 +29,9 @@ fn create_transfer(
             )?;
             app.authorize_orchard_bundle(tx)?
         }
-        Address::Transparent(dest) => {
-            app.wallet
-                .create_transaction(&accumulator, dest, amount, fee)?
-        }
+        Address::Transparent(dest) => app
+            .wallet
+            .create_transparent_transaction(&accumulator, dest, amount, fee)?,
     };
     app.sign_and_send(tx)?;
     Ok(())

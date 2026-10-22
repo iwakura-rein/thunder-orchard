@@ -11,6 +11,7 @@ use thunder_orchard_app_rpc_api::{
 };
 use thunder_orchard_types::{
     M6id, ShieldedAddress, TransparentAddress, Txid, net::PeerAddress,
+    wallet::TransparentTransferDests,
 };
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -70,6 +71,15 @@ pub enum Command {
         dest: TransparentAddress,
         #[arg(long)]
         value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Create a tx that transfers funds to each transparent address in a
+    /// JSON map of transparent address to value in sats, such as
+    /// `{"<address>": 1000}`
+    CreateTransparentTransferMany {
+        #[arg(value_parser = JsonParser::<TransparentTransferDests>::parse)]
+        dests: TransparentTransferDests,
         #[arg(long)]
         fee_sats: u64,
     },
@@ -275,13 +285,6 @@ where
                 .await?;
             format!("{txid}")
         }
-        Command::CreateUnshield {
-            value_sats,
-            fee_sats,
-        } => {
-            let txid = rpc_client.create_unshield(value_sats, fee_sats).await?;
-            format!("{txid}")
-        }
         Command::CreateTransparentTransfer {
             dest,
             value_sats,
@@ -290,6 +293,19 @@ where
             let txid = rpc_client
                 .create_transparent_transfer(dest, value_sats, fee_sats)
                 .await?;
+            format!("{txid}")
+        }
+        Command::CreateTransparentTransferMany { dests, fee_sats } => {
+            let txid = rpc_client
+                .create_transparent_transfer_many(dests, fee_sats)
+                .await?;
+            format!("{txid}")
+        }
+        Command::CreateUnshield {
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client.create_unshield(value_sats, fee_sats).await?;
             format!("{txid}")
         }
         Command::CreateWithdrawal {
