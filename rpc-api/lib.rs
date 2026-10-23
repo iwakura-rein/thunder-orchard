@@ -447,8 +447,8 @@ pub mod wallet {
         Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid, Header,
         InPoint, M6id, MerkleRoot, Nullifier, OutPoint, Output, OutputContent,
         Outputs, PointedOutput, ShieldedAddress, Transaction,
-        TransparentAddress, Txid,
-        schema::BitcoinAddr, schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+        TransparentAddress, Txid, schema::BitcoinAddr,
+        schema::BitcoinBlockHash, schema::BitcoinOutPoint,
         schema::UtreexoNodeHash, schema::UtreexoProof,
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
@@ -573,13 +573,12 @@ pub mod wallet {
         ) -> RpcResult<Vec<TransparentAddress>>;
 
         /// Get confirmed wallet Orchard notes, sorted by nullifier.
-        /// Their sum is `available_shielded_sats` in `balance`.
         #[method(name = "get_wallet_orchard_notes")]
         async fn get_wallet_orchard_notes(&self)
         -> RpcResult<Vec<OrchardNote>>;
 
         /// Get wallet Orchard notes from unconfirmed transactions, sorted by
-        /// nullifier. `balance` does not count them.
+        /// nullifier.
         #[method(name = "get_wallet_orchard_notes_unconfirmed")]
         async fn get_wallet_orchard_notes_unconfirmed(
             &self,

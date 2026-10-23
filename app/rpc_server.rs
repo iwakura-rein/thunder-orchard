@@ -381,19 +381,6 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
     }
 }
 
-fn orchard_note(
-    (nullifier, note): (
-        thunder_orchard::types::orchard::Nullifier,
-        thunder_orchard::types::orchard::Note,
-    ),
-) -> rpc_api::wallet::OrchardNote {
-    rpc_api::wallet::OrchardNote {
-        nullifier,
-        recipient: note.recipient(),
-        value_sats: note.value().to_sat(),
-    }
-}
-
 #[async_trait]
 impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
     async fn balance(&self) -> RpcResult<Balance> {
@@ -720,7 +707,15 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
                 .get_orchard_notes(&rotxn)
                 .map_err(custom_err)?
         };
-        Ok(notes.into_iter().map(orchard_note).collect())
+        let res = notes
+            .into_iter()
+            .map(|(nullifier, note)| rpc_api::wallet::OrchardNote {
+                nullifier,
+                recipient: note.recipient(),
+                value_sats: note.value().to_sat(),
+            })
+            .collect();
+        Ok(res)
     }
 
     async fn get_wallet_orchard_notes_unconfirmed(
@@ -735,7 +730,15 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
                 .get_orchard_notes_unconfirmed(&rotxn)
                 .map_err(custom_err)?
         };
-        Ok(notes.into_iter().map(orchard_note).collect())
+        let res = notes
+            .into_iter()
+            .map(|(nullifier, note)| rpc_api::wallet::OrchardNote {
+                nullifier,
+                recipient: note.recipient(),
+                value_sats: note.value().to_sat(),
+            })
+            .collect();
+        Ok(res)
     }
 
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>> {

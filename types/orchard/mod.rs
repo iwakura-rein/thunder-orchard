@@ -1382,7 +1382,7 @@ pub struct Note(orchard::Note);
 
 impl Note {
     pub fn recipient(&self) -> Address {
-        Address::wrap(self.0.recipient())
+        Address(self.0.recipient())
     }
 
     pub fn value(&self) -> bitcoin::Amount {

@@ -1630,8 +1630,6 @@ impl Wallet {
         Ok(balance)
     }
 
-    /// Confirmed Orchard notes. Their sum is `available_shielded` in
-    /// [`Self::get_balance`].
     pub fn get_orchard_notes(
         &self,
         rotxn: &RoTxn,
@@ -1644,8 +1642,6 @@ impl Wallet {
         Ok(notes)
     }
 
-    /// Orchard notes received in unconfirmed transactions.
-    /// [`Self::get_balance`] does not count them.
     pub fn get_orchard_notes_unconfirmed(
         &self,
         rotxn: &RoTxn,
