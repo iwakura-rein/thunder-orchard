@@ -416,6 +416,7 @@ pub mod wallet {
         InPoint, M6id, MerkleRoot, OutPoint, Output, OutputContent,
         PointedOutput, ShieldedAddress, SpentOutput, Transaction,
         TransparentAddress, Txid,
+        orchard::Nullifier,
         transaction::{self, Outputs},
         wallet::{Balance, TransparentTransferDests},
     };
@@ -434,11 +435,20 @@ pub mod wallet {
         pub fees_sats: u64,
     }
 
+    /// Orchard note that the wallet holds
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct OrchardNote {
+        pub nullifier: Nullifier,
+        pub recipient: ShieldedAddress,
+        pub value_sats: u64,
+    }
+
     #[open_api(ref_schemas[
         Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid, Header,
-        InPoint, M6id, MerkleRoot, OutPoint, Output, OutputContent, Outputs,
-        PointedOutput, Transaction, TransparentAddress, Txid,
-        schema::BitcoinAddr, schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+        InPoint, M6id, MerkleRoot, Nullifier, OutPoint, Output, OutputContent,
+        Outputs, PointedOutput, ShieldedAddress, Transaction,
+        TransparentAddress, Txid, schema::BitcoinAddr,
+        schema::BitcoinBlockHash, schema::BitcoinOutPoint,
         schema::UtreexoNodeHash, schema::UtreexoProof,
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
@@ -561,6 +571,18 @@ pub mod wallet {
         async fn get_transparent_wallet_addresses(
             &self,
         ) -> RpcResult<Vec<TransparentAddress>>;
+
+        /// Get confirmed wallet Orchard notes, sorted by nullifier.
+        #[method(name = "get_wallet_orchard_notes")]
+        async fn get_wallet_orchard_notes(&self)
+        -> RpcResult<Vec<OrchardNote>>;
+
+        /// Get wallet Orchard notes from unconfirmed transactions, sorted by
+        /// nullifier.
+        #[method(name = "get_wallet_orchard_notes_unconfirmed")]
+        async fn get_wallet_orchard_notes_unconfirmed(
+            &self,
+        ) -> RpcResult<Vec<OrchardNote>>;
 
         /// Get wallet UTXOs
         #[method(name = "get_wallet_utxos")]

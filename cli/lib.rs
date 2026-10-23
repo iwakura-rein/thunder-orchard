@@ -148,6 +148,11 @@ pub enum Command {
         #[arg(required = true)]
         addresses: Vec<TransparentAddress>,
     },
+    /// Get confirmed wallet Orchard notes, sorted by nullifier
+    GetWalletOrchardNotes,
+    /// Get wallet Orchard notes from unconfirmed transactions, sorted by
+    /// nullifier
+    GetWalletOrchardNotesUnconfirmed,
     /// Get wallet STXOs
     GetWalletStxos,
     /// Get unconfirmed wallet STXOs
@@ -398,6 +403,15 @@ where
             let addresses = addresses.into_iter().collect();
             let utxos = rpc_client.get_utxos(addresses).await?;
             serde_json::to_string_pretty(&utxos)?
+        }
+        Command::GetWalletOrchardNotes => {
+            let notes = rpc_client.get_wallet_orchard_notes().await?;
+            serde_json::to_string_pretty(&notes)?
+        }
+        Command::GetWalletOrchardNotesUnconfirmed => {
+            let notes =
+                rpc_client.get_wallet_orchard_notes_unconfirmed().await?;
+            serde_json::to_string_pretty(&notes)?
         }
         Command::GetWalletStxos => {
             let stxos = rpc_client.get_wallet_stxos().await?;

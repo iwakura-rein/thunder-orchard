@@ -695,6 +695,52 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
         Ok(stxos)
     }
 
+    async fn get_wallet_orchard_notes(
+        &self,
+    ) -> RpcResult<Vec<rpc_api::wallet::OrchardNote>> {
+        let notes = {
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
+            self.app
+                .wallet
+                .get_orchard_notes(&rotxn)
+                .map_err(custom_err)?
+        };
+        let res = notes
+            .into_iter()
+            .map(|(nullifier, note)| rpc_api::wallet::OrchardNote {
+                nullifier,
+                recipient: note.recipient(),
+                value_sats: note.value().to_sat(),
+            })
+            .collect();
+        Ok(res)
+    }
+
+    async fn get_wallet_orchard_notes_unconfirmed(
+        &self,
+    ) -> RpcResult<Vec<rpc_api::wallet::OrchardNote>> {
+        let notes = {
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
+            self.app
+                .wallet
+                .get_orchard_notes_unconfirmed(&rotxn)
+                .map_err(custom_err)?
+        };
+        let res = notes
+            .into_iter()
+            .map(|(nullifier, note)| rpc_api::wallet::OrchardNote {
+                nullifier,
+                recipient: note.recipient(),
+                value_sats: note.value().to_sat(),
+            })
+            .collect();
+        Ok(res)
+    }
+
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
         let utxos = {
             let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
