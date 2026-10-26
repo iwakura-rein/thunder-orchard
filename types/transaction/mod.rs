@@ -279,7 +279,8 @@ pub struct Authorized<T> {
     /// Authorizations are called witnesses in Bitcoin.
     pub authorizations: Vec<Authorization>,
 }
-pub type AuthorizedTransaction = Authorized<Transaction>;
+
+pub type AuthorizedTransaction<T = Transaction> = Authorized<T>;
 
 #[cfg(test)]
 mod test {

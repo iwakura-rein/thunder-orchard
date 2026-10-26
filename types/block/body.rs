@@ -130,17 +130,21 @@ impl Body {
         let Self {
             coinbase,
             transactions,
-            authorizations: _,
+            authorizations,
         } = self;
         // Borsh encoding for hashing
         #[derive(BorshSerialize)]
         struct HashComponents {
             coinbase_commitment: CoinbaseMerkleRoot,
             txs_commitment: Hash,
+            authorizations_commitment: Hash,
         }
         hashes::hash(&HashComponents {
             coinbase_commitment: coinbase.compute_merkle_root(),
             txs_commitment: Self::compute_txs_commitment(transactions),
+            authorizations_commitment: hashes::hash_with_scratch_buffer(
+                authorizations,
+            ),
         })
         .into()
     }
