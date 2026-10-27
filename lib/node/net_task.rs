@@ -100,6 +100,9 @@ fn connect_tip_(
     let block_hash = header.hash();
     let prev_main_height =
         archive.get_main_height(rwtxn, header.prev_main_hash)?;
+    // 2WPD events are connected BEFORE the block's transactions, so
+    // that txs can spend eg. recreated unsuccessful-withdrawal outputs.
+    let () = state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
     // Use optimised prevalidation + connect path to avoid recomputation
     let orchard_frontier = if tracing::enabled!(tracing::Level::DEBUG) {
         let merkle_root = body.compute_merkle_root();
@@ -134,8 +137,7 @@ fn connect_tip_(
             &orchard_frontier,
         )?;
     }
-    let accumulator =
-        state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
+    let accumulator = state.get_accumulator(rwtxn)?;
     // TODO: are these needed?
     {
         let () = archive.put_header(rwtxn, header)?;
@@ -250,7 +252,7 @@ pub(in crate::node) fn disconnect_tip_(
             block_info: block_infos.into_iter().rev().collect(),
         }
     };
-    let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let () = state.disconnect_withdrawal_bundle_creation(rwtxn)?;
     let prev_accumulator =
         archive.get_accumulator(rwtxn, &tip_header.prev_side_hash)?;
     let prev_frontier = if archive
@@ -264,13 +266,20 @@ pub(in crate::node) fn disconnect_tip_(
     } else {
         None
     };
-    let () = state.disconnect_tip(
+    let () = state.disconnect_tip_body(
         rwtxn,
         &tip_header,
         &tip_body,
-        &prev_accumulator,
         prev_frontier.as_ref(),
     )?;
+    let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let () = state.disconnect_tip_header(rwtxn, &tip_header)?;
+    // TODO: revert accumulator only necessary because rustreexo does not
+    // support undo yet
+    let () = state
+        .utreexo_accumulator
+        .put(rwtxn, &(), &prev_accumulator)
+        .map_err(DbError::from)?;
     for transaction in tip_body.authorized_transactions().iter().rev() {
         let _: Result<(), mempool::error::TxRejected> = mempool
             .insert(rwtxn, transaction)

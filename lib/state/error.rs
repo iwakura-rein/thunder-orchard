@@ -52,9 +52,6 @@ pub enum ValidateFilledTransaction {
     #[error("value in is less than value out")]
     #[fatal(false)]
     NotEnoughValueIn,
-    #[error("withdrawal output {outpoint} cannot be spent by a transaction")]
-    #[fatal(false)]
-    SpendWithdrawalOutput { outpoint: OutPoint },
     #[error(transparent)]
     #[fatal(false)]
     UtxoHashMismatch(#[from] Box<UtxoHashMismatch>),
@@ -440,15 +437,13 @@ pub enum Error {
     #[error("too many sigops")]
     TooManySigops,
     #[error(
-        "protocol would be insolvent after confirming unexpected withdrawal bundle {} in {}; bundle outpoint {} already spent",
+        "protocol would be insolvent after confirming unexpected withdrawal bundle {} in {}; bundle outpoints already spent",
         .m6id,
         .event_block_hash,
-        .outpoint,
     )]
-    UnexpectedWithdrawalBundleInsolvency {
+    UnexpectedWithdrawalBundleConfirmed {
         event_block_hash: bitcoin::BlockHash,
         m6id: M6id,
-        outpoint: OutPoint,
     },
     #[error("Unknown withdrawal bundle: {m6id}")]
     UnknownWithdrawalBundle { m6id: M6id },

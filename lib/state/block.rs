@@ -6,11 +6,11 @@ use rayon::prelude::ParallelSliceMut as _;
 use sneed::{RoTxn, RwTxn};
 
 use crate::{
-    state::{Error, PrevalidatedBlock, State, error},
+    state::{Error, PrevalidatedBlock, State, error, two_way_peg_data},
     types::{
-        Accumulator, AccumulatorDiff, AmountOverflowError, Body, GetValue as _,
-        Header, InPoint, OutPoint, OutPointKey, Output, PointedOutput,
-        SpentOutput, Transaction, UtreexoNodeHash,
+        AccumulatorDiff, AmountOverflowError, Body, GetValue as _, Header,
+        InPoint, OutPoint, OutPointKey, Output, PointedOutput, SpentOutput,
+        Transaction, UtreexoNodeHash,
         authorization::{self, BatchVerificationContext},
         orchard,
     },
@@ -19,6 +19,24 @@ use crate::{
 /// Calculate total number of inputs across all transactions in a block body
 fn calculate_total_inputs(body: &Body) -> usize {
     body.transactions.iter().map(|t| t.inputs.len()).sum()
+}
+
+/// Connect a block header: update the tip, height, and coinbase
+/// height.
+/// MUST be applied AFTER the block's transactions, and BEFORE
+/// withdrawal bundle construction.
+pub fn connect_header(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    header: &Header,
+) -> Result<(), Error> {
+    let block_hash = header.hash();
+    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
+    state.tip.put(rwtxn, &(), &block_hash)?;
+    let coinbase_txid = header.compute_coinbase_txid();
+    state.coinbase_height.put(rwtxn, &coinbase_txid, &height)?;
+    state.height.put(rwtxn, &(), &height)?;
+    Ok(())
 }
 
 pub fn validate(
@@ -174,6 +192,21 @@ pub fn validate(
         authorization::verify_authorizations(batch_verification_context, body)?;
     // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff)?;
+    // Withdrawal bundles are constructed after the block's
+    // transactions, and the header roots commit to the
+    // post-construction accumulator: simulate the construction here.
+    {
+        let construction_diff =
+            two_way_peg_data::simulate_withdrawal_bundle_construction(
+                state,
+                rotxn,
+                height,
+                &filled_transactions,
+                &body.coinbase,
+                coinbase_txid,
+            )?;
+        let () = accumulator.apply_diff(construction_diff)?;
+    }
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
         return Err(Error::UtreexoRootsMismatch);
@@ -332,8 +365,21 @@ pub fn prevalidate(
     }
     let () =
         authorization::verify_authorizations(batch_verification_ctxt, body)?;
+    // Withdrawal bundles are constructed after the block's
+    // transactions, and the header roots commit to the
+    // post-construction accumulator: simulate the construction here.
+    let construction_diff =
+        two_way_peg_data::simulate_withdrawal_bundle_construction(
+            state,
+            rotxn,
+            height,
+            &filled_transactions,
+            &body.coinbase,
+            coinbase_txid,
+        )?;
     // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
+    let () = accumulator.apply_diff(construction_diff)?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
         return Err(Error::UtreexoRootsMismatch);
@@ -448,20 +494,14 @@ pub fn connect_prevalidated(
         state.utxos.put(rwtxn, key, output)?;
     }
 
-    // Update tip and height using precomputed values (no redundant DB reads)
-    let block_hash = header.hash();
-    state.tip.put(rwtxn, &(), &block_hash)?;
-    state.coinbase_height.put(
-        rwtxn,
-        &coinbase_txid,
-        &prevalidated.next_height,
-    )?;
-    state.height.put(rwtxn, &(), &prevalidated.next_height)?;
+    // NOTE: the tip, height, and coinbase height are NOT updated here;
+    // that happens after the block's transactions, in `connect_header`.
 
     // Apply accumulator diff and update orchard state
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     let () = state.orchard.put_frontier(rwtxn, &frontier)?;
+    let block_hash = header.hash();
     let root_changed: bool = state.orchard.put_historical_root(
         rwtxn,
         block_hash,
@@ -691,12 +731,11 @@ fn disconnect_transaction(
 
 /// `prev_note_commitments_merkle_frontier` MUST be `Some(_)` iff
 /// the tip being disconnected changed the frontier.
-pub fn disconnect_tip(
+pub fn disconnect_tip_body(
     state: &State,
     rwtxn: &mut RwTxn,
     header: &Header,
     body: &Body,
-    prev_accumulator: &Accumulator,
     prev_note_commitments_merkle_frontier: Option<&orchard::Frontier>,
 ) -> Result<(), Error> {
     let tip_hash = state.tip.try_get(rwtxn, &())?.ok_or(Error::NoTip)?;
@@ -748,6 +787,29 @@ pub fn disconnect_tip(
                 }
             })?;
     }
+    // NOTE: the tip, height, and coinbase height are NOT rolled back
+    // here; that happens after 2WPD is disconnected, in
+    // `disconnect_tip_header`.
+    let () = accumulator.apply_diff(accumulator_diff)?;
+    state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
+    if let Some(frontier) = prev_note_commitments_merkle_frontier {
+        state.orchard.put_frontier(rwtxn, frontier)?;
+    }
+    let _: bool = state.orchard.delete_historical_root(rwtxn, tip_hash)?;
+    Ok(())
+}
+
+/// Disconnect the tip block's header: roll back the coinbase height,
+/// tip, and height.
+/// MUST be applied AFTER disconnecting the block's transactions and
+/// 2WPD.
+pub fn disconnect_tip_header(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    header: &Header,
+) -> Result<(), Error> {
+    let coinbase_txid = header.compute_coinbase_txid();
+    state.coinbase_height.delete(rwtxn, &coinbase_txid)?;
     let height = state
         .try_get_height(rwtxn)?
         .expect("Height should not be None");
@@ -762,16 +824,6 @@ pub fn disconnect_tip(
             state.height.put(rwtxn, &(), &(height - 1))?;
         }
     }
-    let () = accumulator.apply_diff(accumulator_diff)?;
-    // Accumulator is restored from archive, instead of computed during
-    // disconnect
-    state
-        .utreexo_accumulator
-        .put(rwtxn, &(), prev_accumulator)?;
-    if let Some(frontier) = prev_note_commitments_merkle_frontier {
-        state.orchard.put_frontier(rwtxn, frontier)?;
-    }
-    let _: bool = state.orchard.delete_historical_root(rwtxn, tip_hash)?;
     Ok(())
 }
 

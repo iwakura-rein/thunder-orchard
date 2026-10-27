@@ -60,6 +60,48 @@ impl merkle_cbt::merkle_tree::Merge for Merge {
 // Complete binary merkle tree
 type Cbmt = merkle_cbt::CBMT<CbmtNode, Merge>;
 
+fn compute_txs_commitment<Tx>(txs: &[Tx]) -> Hash
+where
+    Tx: Borrow<Transaction>,
+{
+    let n_txs = txs.len();
+    let leaves: Vec<_> = txs
+        .iter()
+        .enumerate()
+        .map(|(idx, tx)| CbmtNode {
+            commitment: tx.borrow().compute_merkle_root().into(),
+            // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+            index: (idx + n_txs) - 1,
+        })
+        .collect();
+    Cbmt::build_merkle_root(leaves.as_slice()).commitment
+}
+
+pub fn compute_merkle_root<Tx>(
+    coinbase: &Coinbase,
+    txs: &[Tx],
+    authorizations: &[Authorization],
+) -> MerkleRoot
+where
+    Tx: Borrow<Transaction>,
+{
+    // Borsh encoding for hashing
+    #[derive(BorshSerialize)]
+    struct HashComponents {
+        coinbase_commitment: CoinbaseMerkleRoot,
+        txs_commitment: Hash,
+        authorizations_commitment: Hash,
+    }
+    hashes::hash(&HashComponents {
+        coinbase_commitment: coinbase.compute_merkle_root(),
+        txs_commitment: compute_txs_commitment(txs),
+        authorizations_commitment: hashes::hash_with_scratch_buffer(
+            authorizations,
+        ),
+    })
+    .into()
+}
+
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Body {
     pub coinbase: Coinbase,
@@ -109,44 +151,13 @@ impl Body {
             .collect()
     }
 
-    fn compute_txs_commitment<Tx>(txs: &[Tx]) -> Hash
-    where
-        Tx: Borrow<Transaction>,
-    {
-        let n_txs = txs.len();
-        let leaves: Vec<_> = txs
-            .iter()
-            .enumerate()
-            .map(|(idx, tx)| CbmtNode {
-                commitment: tx.borrow().compute_merkle_root().into(),
-                // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
-                index: (idx + n_txs) - 1,
-            })
-            .collect();
-        Cbmt::build_merkle_root(leaves.as_slice()).commitment
-    }
-
     pub fn compute_merkle_root(&self) -> MerkleRoot {
         let Self {
             coinbase,
             transactions,
             authorizations,
         } = self;
-        // Borsh encoding for hashing
-        #[derive(BorshSerialize)]
-        struct HashComponents {
-            coinbase_commitment: CoinbaseMerkleRoot,
-            txs_commitment: Hash,
-            authorizations_commitment: Hash,
-        }
-        hashes::hash(&HashComponents {
-            coinbase_commitment: coinbase.compute_merkle_root(),
-            txs_commitment: Self::compute_txs_commitment(transactions),
-            authorizations_commitment: hashes::hash_with_scratch_buffer(
-                authorizations,
-            ),
-        })
-        .into()
+        compute_merkle_root(coinbase, transactions, authorizations)
     }
 
     // Modifies the memforest, without checking tx proofs

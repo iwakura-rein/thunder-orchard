@@ -158,7 +158,7 @@ pub mod node {
             use serde::Serialize;
             use thunder_orchard_types::{
                 Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid,
-                Header, MerkleRoot, Output, OutputContent, Transaction,
+                Header, M6id, MerkleRoot, Output, OutputContent, Transaction,
                 TransparentAddress, Txid, transaction::Outputs,
             };
             use typewit::const_marker::Bool;
@@ -194,7 +194,7 @@ pub mod node {
             /// manually
             #[open_api(ref_schemas[
                 Authorization, Block, BlockHash, BlockVerbose, Body,
-                BodyVerbose, Coinbase, CoinbaseTxid, Header, MerkleRoot,
+                BodyVerbose, Coinbase, CoinbaseTxid, Header, M6id, MerkleRoot,
                 Output, OutputContent, Outputs, Transaction,
                 TransactionVerbose, TransparentAddress, Txid,
                 schema::BitcoinAddr, schema::BitcoinBlockHash,

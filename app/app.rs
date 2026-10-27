@@ -1,5 +1,5 @@
 use std::{
-    borrow::BorrowMut,
+    borrow::{Borrow, BorrowMut},
     collections::{HashMap, HashSet},
     net::SocketAddr,
     path::PathBuf,
@@ -14,8 +14,8 @@ use thunder_orchard::{
     node::{self, FatalErrorTx, Node},
     state,
     types::{
-        self, Body, Coinbase, InPoint, OutPoint, Transaction,
-        TransparentAddress,
+        self, AuthorizedTransaction, Coinbase, FilledTransaction, InPoint,
+        OutPoint, Transaction, TransparentAddress,
         proto::mainchain::{
             self,
             generated::{
@@ -61,7 +61,7 @@ pub enum Error {
     #[error("Failed to submit transaction")]
     SubmitTransaction(#[from] node::error::SubmitTransaction),
     #[error(transparent)]
-    Utreexo(thunder_orchard::types::UtreexoError),
+    Utreexo(#[from] thunder_orchard::types::UtreexoError),
     #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
     VerifyMainchainServices {
         url: Box<url::Url>,
@@ -159,7 +159,8 @@ fn update_wallet<'a>(
                         })?;
                     deposit_main_heights.insert(*txid, height);
                 }
-                OutPoint::Regular { .. } => (),
+                OutPoint::Regular { .. }
+                | OutPoint::UnsuccessfulWithdrawal { .. } => (),
             }
         }
         (coinbase_heights, deposit_main_heights)
@@ -613,6 +614,124 @@ impl App {
     const EMPTY_BLOCK_BMM_BRIBE: bitcoin::Amount =
         bitcoin::Amount::from_sat(1000);
 
+    /// Compute the header roots for a block template: the accumulator
+    /// after 2WPD events, the block's transactions, and withdrawal
+    /// bundle construction.
+    fn compute_roots<Tx>(
+        &self,
+        prev_main_hash: bitcoin::BlockHash,
+        prev_side_hash: Option<types::BlockHash>,
+        coinbase: &Coinbase,
+        txs: &mut [Tx],
+        merkle_root: types::MerkleRoot,
+    ) -> Result<Vec<types::UtreexoNodeHash>, Error>
+    where
+        Tx: BorrowMut<Transaction> + Borrow<FilledTransaction>,
+    {
+        let coinbase_txid = Coinbase::compute_txid(
+            &merkle_root,
+            &prev_main_hash,
+            prev_side_hash.as_ref(),
+        );
+        let two_way_peg_data =
+            self.node.get_pending_two_way_peg_data(prev_main_hash)?;
+        let (next_height, drop_due, tip_accumulator) = {
+            let rotxn =
+                self.node.env().read_txn().map_err(node::Error::from)?;
+            let next_height = if let Some(prev_side_hash) = prev_side_hash {
+                self.node
+                    .archive()
+                    .get_height(&rotxn, prev_side_hash)
+                    .map_err(node::Error::from)?
+                    + 1
+            } else {
+                0
+            };
+            let drop_due = self
+                .node
+                .state()
+                .stale_pending_bundle_drop_due(&rotxn, next_height)
+                .map_err(node::Error::from)?;
+            let tip_accumulator = self
+                .node
+                .archive()
+                .get_accumulator(&rotxn, &prev_side_hash)
+                .map_err(node::Error::from)?;
+            (next_height, drop_due, tip_accumulator)
+        };
+        if two_way_peg_data.block_info.is_empty() && !drop_due {
+            // Fast path: no 2WPD events and no stale-bundle drop, so
+            // the post-events accumulator is the tip accumulator, and
+            // tx proofs remain valid.
+            let mut accumulator = tip_accumulator;
+            let () = types::Body::modify_memforest(
+                coinbase_txid,
+                coinbase.outputs.as_slice(),
+                txs,
+                &mut accumulator.0,
+            )?;
+            let rotxn =
+                self.node.env().read_txn().map_err(node::Error::from)?;
+            let construction_diff = self
+                .node
+                .state()
+                .simulate_withdrawal_bundle_construction(
+                    &rotxn,
+                    next_height,
+                    txs,
+                    coinbase,
+                    coinbase_txid,
+                )
+                .map_err(node::Error::from)?;
+            let () = accumulator.apply_diff(construction_diff)?;
+            return Ok(accumulator.get_roots());
+        }
+        // Slow path: dry-run the full application in a scratch write
+        // txn that is then aborted.
+        let mut rwtxn = self
+            .node
+            .env()
+            .write_txn()
+            .map_err(|err| node::Error::DbEnv(err.into()))?;
+        self.node
+            .state()
+            .connect_two_way_peg_data(&mut rwtxn, &two_way_peg_data)
+            .map_err(node::Error::from)?;
+        let mut accumulator = self
+            .node
+            .state()
+            .get_accumulator(&rwtxn)
+            .map_err(node::Error::from)?;
+        // tx proofs were made against the pre-events accumulator;
+        // regenerate them
+        for tx in txs.iter_mut() {
+            self.node
+                .state()
+                .regenerate_proof(&rwtxn, tx.borrow_mut())
+                .map_err(node::Error::from)?;
+        }
+        let () = types::Body::modify_memforest(
+            coinbase_txid,
+            coinbase.outputs.as_slice(),
+            txs,
+            &mut accumulator.0,
+        )?;
+        let construction_diff = self
+            .node
+            .state()
+            .simulate_withdrawal_bundle_construction(
+                &rwtxn,
+                next_height,
+                txs,
+                coinbase,
+                coinbase_txid,
+            )
+            .map_err(node::Error::from)?;
+        let () = accumulator.apply_diff(construction_diff)?;
+        rwtxn.abort();
+        Ok(accumulator.get_roots())
+    }
+
     /// Assemble a block to blind merge mine, without requesting BMM for it
     async fn build_block_template(
         &self,
@@ -716,41 +835,41 @@ impl App {
                     outputs: outputs.into(),
                 }
             };
-            let body = types::Body::new(txs, coinbase);
-            let merkle_root = body.compute_merkle_root();
-            let roots = {
-                let mut accumulator = {
-                    let rotxn = self
-                        .node
-                        .env()
-                        .read_txn()
-                        .map_err(node::Error::from)?;
-                    self.node
-                        .archive()
-                        .get_accumulator(&rotxn, &tip_hash)
-                        .map_err(node::Error::from)?
-                };
-                let coinbase_txid = Coinbase::compute_txid(
-                    &merkle_root,
-                    &prev_main_hash,
-                    prev_side_hash.as_ref(),
-                );
-                let () = Body::modify_memforest(
-                    coinbase_txid,
-                    &body.coinbase.outputs.0,
-                    &body.transactions,
-                    &mut accumulator.0,
-                )
-                .map_err(Error::Utreexo)?;
-                accumulator
-                    .0
-                    .get_roots()
-                    .iter()
-                    .map(|root| root.get_data())
-                    .collect()
+            let mut authorizations = {
+                let capacity =
+                    txs.iter().map(|tx| tx.authorizations.len()).sum();
+                Vec::with_capacity(capacity)
+            };
+            let mut filled_txs = Vec::with_capacity(txs.len());
+            for tx in txs {
+                let AuthorizedTransaction {
+                    transaction,
+                    authorizations: tx_authorizations,
+                } = tx;
+                authorizations.extend(tx_authorizations);
+                filled_txs.push(transaction);
+            }
+            let merkle_root = types::block::body::compute_merkle_root(
+                &coinbase,
+                &filled_txs,
+                &authorizations,
+            );
+            let roots = self.compute_roots(
+                prev_main_hash,
+                prev_side_hash,
+                &coinbase,
+                &mut filled_txs,
+                merkle_root,
+            )?;
+            let transactions =
+                filled_txs.into_iter().map(|tx| tx.transaction).collect();
+            let body = types::Body {
+                coinbase,
+                transactions,
+                authorizations,
             };
             let header = types::Header {
-                merkle_root: body.compute_merkle_root(),
+                merkle_root,
                 roots,
                 prev_side_hash,
                 prev_main_hash,
@@ -765,26 +884,17 @@ impl App {
             (bribe, header, body, tx_fees)
         } else {
             let coinbase = Coinbase::default();
+            let mut txs: Vec<FilledTransaction> = Vec::new();
+            let merkle_root =
+                types::block::body::compute_merkle_root(&coinbase, &txs, &[]);
+            let roots = self.compute_roots(
+                prev_main_hash,
+                prev_side_hash,
+                &coinbase,
+                &mut txs,
+                merkle_root,
+            )?;
             let body = types::Body::new(Vec::new(), coinbase);
-            let roots = {
-                let accumulator = {
-                    let rotxn = self
-                        .node
-                        .env()
-                        .read_txn()
-                        .map_err(node::Error::from)?;
-                    self.node
-                        .archive()
-                        .get_accumulator(&rotxn, &prev_side_hash)
-                        .map_err(node::Error::from)?
-                };
-                accumulator
-                    .0
-                    .get_roots()
-                    .iter()
-                    .map(|root| root.get_data())
-                    .collect()
-            };
             let header = types::Header {
                 merkle_root: body.compute_merkle_root(),
                 roots,
