@@ -98,19 +98,36 @@ fn connect_tip_(
     two_way_peg_data: &mainchain::TwoWayPegData,
 ) -> Result<(), Error> {
     let block_hash = header.hash();
+    let prev_main_height =
+        archive.get_main_height(rwtxn, header.prev_main_hash)?;
+    // 2WPD events are connected BEFORE the block's transactions, so
+    // that txs can spend eg. recreated unsuccessful-withdrawal outputs.
+    let () = state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
     // Use optimised prevalidation + connect path to avoid recomputation
     let orchard_frontier = if tracing::enabled!(tracing::Level::DEBUG) {
         let merkle_root = body.compute_merkle_root();
         let height = state.try_get_height(rwtxn).map_err(state::Error::from)?;
         let orchard_frontier = state
-            .apply_block(rwtxn, batch_verification_ctxt, header, body)
+            .apply_block(
+                rwtxn,
+                batch_verification_ctxt,
+                header,
+                prev_main_height,
+                body,
+            )
             .map_err(state::Error::from)?;
         tracing::debug!(?height, %merkle_root, %block_hash,
                             "connected body");
         orchard_frontier
     } else {
         state
-            .apply_block(rwtxn, batch_verification_ctxt, header, body)
+            .apply_block(
+                rwtxn,
+                batch_verification_ctxt,
+                header,
+                prev_main_height,
+                body,
+            )
             .map_err(state::Error::from)?
     };
     if let Some(orchard_frontier) = orchard_frontier {
@@ -120,8 +137,7 @@ fn connect_tip_(
             &orchard_frontier,
         )?;
     }
-    let accumulator =
-        state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
+    let accumulator = state.get_accumulator(rwtxn)?;
     // TODO: are these needed?
     {
         let () = archive.put_header(rwtxn, header)?;
@@ -223,6 +239,11 @@ pub(in crate::node) fn disconnect_tip_(
                 if block_info.events.is_empty() {
                     Ok(None)
                 } else {
+                    let height = archive.get_main_height(rwtxn, ancestor)?;
+                    let block_info = mainchain::two_way_peg_data::BlockInfo {
+                        height,
+                        inner: block_info,
+                    };
                     Ok(Some((ancestor, block_info)))
                 }
             })
@@ -231,7 +252,7 @@ pub(in crate::node) fn disconnect_tip_(
             block_info: block_infos.into_iter().rev().collect(),
         }
     };
-    let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let () = state.disconnect_withdrawal_bundle_creation(rwtxn)?;
     let prev_accumulator =
         archive.get_accumulator(rwtxn, &tip_header.prev_side_hash)?;
     let prev_frontier = if archive
@@ -245,13 +266,20 @@ pub(in crate::node) fn disconnect_tip_(
     } else {
         None
     };
-    let () = state.disconnect_tip(
+    let () = state.disconnect_tip_body(
         rwtxn,
         &tip_header,
         &tip_body,
-        &prev_accumulator,
         prev_frontier.as_ref(),
     )?;
+    let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let () = state.disconnect_tip_header(rwtxn, &tip_header)?;
+    // TODO: revert accumulator only necessary because rustreexo does not
+    // support undo yet
+    let () = state
+        .utreexo_accumulator
+        .put(rwtxn, &(), &prev_accumulator)
+        .map_err(DbError::from)?;
     for transaction in tip_body.authorized_transactions().iter().rev() {
         let _: Result<(), mempool::error::TxRejected> = mempool
             .insert(rwtxn, transaction)
@@ -380,8 +408,13 @@ fn reorg_to_tip<ThreadLocalStorage>(
                 Ok(Some(ancestor) != common_ancestor_prev_main_hash.as_ref())
             })
             .map(|ancestor| {
+                let height = archive.get_main_height(&rwtxn, ancestor)?;
                 let block_info =
                     archive.get_main_block_info(&rwtxn, &ancestor)?;
+                let block_info = mainchain::two_way_peg_data::BlockInfo {
+                    height,
+                    inner: block_info,
+                };
                 Ok((ancestor, block_info))
             })
             .collect()?
@@ -1538,7 +1571,8 @@ mod test {
         types::{
             Body, Coinbase, Header, MerkleRoot, Network,
             proto::mainchain::{
-                BlockHeaderInfo, Event as MainchainBlockEvent, ValidatorClient,
+                BlockHeaderInfo, BlockInfo, Event as MainchainBlockEvent,
+                ValidatorClient,
             },
         },
     };
@@ -1573,16 +1607,22 @@ mod test {
             while !node.task_handles.net.task.is_finished() {
                 tokio::task::yield_now().await;
             }
-            let main_header = BlockHeaderInfo {
-                block_hash: bitcoin::BlockHash::from_byte_array([1; 32]),
+            let main_parent = BlockHeaderInfo {
+                block_hash: bitcoin::BlockHash::from_byte_array([2; 32]),
                 prev_block_hash: bitcoin::BlockHash::all_zeros(),
                 height: 0,
+                work: bitcoin::Target::MAX.to_work(),
+            };
+            let main_header = BlockHeaderInfo {
+                block_hash: bitcoin::BlockHash::from_byte_array([1; 32]),
+                prev_block_hash: main_parent.block_hash,
+                height: main_parent.height + 1,
                 work: bitcoin::Target::MAX.to_work(),
             };
             let header = Header {
                 merkle_root: MerkleRoot::from([7; 32]),
                 prev_side_hash: None,
-                prev_main_hash: main_header.prev_block_hash,
+                prev_main_hash: main_parent.block_hash,
                 roots: Vec::new(),
             };
             let block_hash = header.hash();
@@ -1592,8 +1632,32 @@ mod test {
                 authorizations: Vec::new(),
             };
             let mut rwtxn = node.env.write_txn()?;
+            // Mainchain headers and block infos, including the BMM
+            // commitment, MUST be stored before the sidechain header,
+            // as required by `Archive::put_header`
+            node.archive
+                .put_main_header_info(&mut rwtxn, &main_parent)?;
+            node.archive.put_main_block_info(
+                &mut rwtxn,
+                main_parent.block_hash,
+                &BlockInfo::default(),
+            )?;
+            node.archive
+                .put_main_header_info(&mut rwtxn, &main_header)?;
+            node.archive.put_main_block_info(
+                &mut rwtxn,
+                main_header.block_hash,
+                &BlockInfo {
+                    bmm_commitment: Some(block_hash),
+                    events: Vec::new(),
+                },
+            )?;
             node.archive.put_header(&mut rwtxn, &header)?;
-            node.archive.put_body(&mut rwtxn, block_hash, &body)?;
+            node.archive.side_tips().connect_mainchain_tip(
+                &mut rwtxn,
+                main_parent,
+                None,
+            )?;
             node.archive.side_tips().connect_mainchain_tip(
                 &mut rwtxn,
                 main_header,
@@ -1602,6 +1666,7 @@ mod test {
                     sidechain_header_data: (&header).into(),
                 }),
             )?;
+            node.archive.put_body(&mut rwtxn, block_hash, &body)?;
             rwtxn.commit()?;
             let ctxt = NetTaskContext {
                 env: node.env.clone(),

@@ -6,7 +6,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use const_hex::FromHex;
 use serde::{Deserialize, Serialize};
 
-use crate::util::serde::hexstr_human_readable;
+use crate::util::{self, serde::hexstr_human_readable};
 
 const BLAKE3_LENGTH: usize = 32;
 
@@ -104,10 +104,29 @@ impl Txid {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct M6id(pub bitcoin::Txid);
+pub struct M6id(
+    #[borsh(
+        deserialize_with = "util::borsh::deserialize::bitcoin_txid",
+        serialize_with = "util::borsh::serialize::bitcoin_txid"
+    )]
+    pub bitcoin::Txid,
+);
 
 impl std::fmt::Display for M6id {
     #[inline(always)]
@@ -116,25 +135,6 @@ impl std::fmt::Display for M6id {
     }
 }
 
-impl BorshSerialize for M6id {
-    fn serialize<W: borsh::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> borsh::io::Result<()> {
-        let bytes: &[u8; 32] = self.0.as_ref();
-        borsh::BorshSerialize::serialize(bytes, writer)
-    }
-}
-
-impl BorshDeserialize for M6id {
-    fn deserialize_reader<R: borsh::io::Read>(
-        reader: &mut R,
-    ) -> borsh::io::Result<Self> {
-        let bytes: [u8; 32] =
-            borsh::BorshDeserialize::deserialize_reader(reader)?;
-        Ok(Self(bitcoin::Txid::from_byte_array(bytes)))
-    }
-}
 impl FromStr for M6id {
     type Err = <bitcoin::Txid as FromStr>::Err;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

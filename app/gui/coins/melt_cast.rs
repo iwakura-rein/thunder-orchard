@@ -5,7 +5,7 @@ use eframe::egui::{self, Button, InnerResponse};
 use parking_lot::RwLock;
 use poll_promise::Promise;
 use thunder_orchard::{
-    types::Txid,
+    types::{Txid, wallet::CoinSelectionHeights},
     wallet::{self, MeltBatch},
 };
 
@@ -107,8 +107,21 @@ impl Melting {
             let txs = Arc::clone(&txs);
             async move {
                 while let Some(tx_fn) = melt_batch.next_tx().await {
+                    let main_height =
+                        app.node.try_get_mainchain_tip_height()?.unwrap_or(0);
+                    let spend_height = app
+                        .node
+                        .try_get_height()?
+                        .map_or(0, |height| height + 1);
                     let accumulator = app.node.get_tip_accumulator()?;
-                    let tx = tx_fn(&accumulator, &app.wallet)?;
+                    let tx = tx_fn(
+                        CoinSelectionHeights {
+                            main_height,
+                            spend_height,
+                        },
+                        &accumulator,
+                        &app.wallet,
+                    )?;
                     let txid = tx.txid();
                     let tx = app.authorize_orchard_bundle(tx)?;
                     let () = app.sign_and_send(tx)?;

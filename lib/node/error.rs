@@ -16,6 +16,9 @@ use crate::{
 pub enum SubmitTransaction {
     #[error(transparent)]
     #[fatal(true)]
+    Archive(Box<archive::Error>),
+    #[error(transparent)]
+    #[fatal(true)]
     CommitRwTxn(#[from] rwtxn::Commit),
     #[error(transparent)]
     #[fatal(true)]
@@ -29,6 +32,12 @@ pub enum SubmitTransaction {
     #[error("failed to validate transaction")]
     #[fatal(forward)]
     Validate(#[from] state::ValidateTransaction),
+}
+
+impl From<archive::Error> for SubmitTransaction {
+    fn from(err: archive::Error) -> Self {
+        Self::Archive(Box::new(err))
+    }
 }
 
 pub mod mainchain_task {

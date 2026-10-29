@@ -7,6 +7,13 @@ use utoipa::ToSchema;
 
 use crate::address::TransparentAddress;
 
+/// Block heights used to select coins
+#[derive(Clone, Copy, Debug)]
+pub struct CoinSelectionHeights {
+    pub main_height: u32,
+    pub spend_height: u32,
+}
+
 /// Destinations of a transparent transfer. Each address takes a value in sats.
 #[serde_as]
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, ToSchema)]

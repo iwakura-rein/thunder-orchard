@@ -8,7 +8,7 @@ use transitive::Transitive;
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash, Hash, M6id,
     MerkleRoot, OutPoint, TransparentAddress, Txid, UtreexoError, Version,
-    WithdrawalBundleError, error, orchard,
+    WithdrawalBundleError, authorization, orchard,
 };
 
 #[derive(Debug, Error)]
@@ -24,6 +24,14 @@ pub struct UtxoHashMismatch {
     pub(in crate::state) input_hash: Hash,
 }
 
+#[derive(Debug, Error)]
+pub enum ImmatureOutPoint {
+    #[error("immature coinbase outpoint")]
+    Coinbase,
+    #[error("immature deposit outpoint")]
+    Deposit,
+}
+
 #[derive(Debug, Error, Fatality, Split)]
 pub enum ValidateFilledTransaction {
     #[error(transparent)]
@@ -32,15 +40,33 @@ pub enum ValidateFilledTransaction {
     #[error(transparent)]
     #[fatal(false)]
     AmountUnderflow(#[from] AmountUnderflowError),
+    #[error(transparent)]
+    #[fatal(true)]
+    DbGet(Box<db::Get>),
+    #[error(transparent)]
+    #[fatal(true)]
+    DbTryGet(Box<db::TryGet>),
+    #[error(transparent)]
+    #[fatal(false)]
+    ImmatureOutPoint(#[from] ImmatureOutPoint),
     #[error("value in is less than value out")]
     #[fatal(false)]
     NotEnoughValueIn,
-    #[error("withdrawal output {outpoint} cannot be spent by a transaction")]
-    #[fatal(false)]
-    SpendWithdrawalOutput { outpoint: OutPoint },
     #[error(transparent)]
     #[fatal(false)]
     UtxoHashMismatch(#[from] Box<UtxoHashMismatch>),
+}
+
+impl From<db::Get> for ValidateFilledTransaction {
+    fn from(err: db::Get) -> Self {
+        Self::DbGet(Box::new(err))
+    }
+}
+
+impl From<db::TryGet> for ValidateFilledTransaction {
+    fn from(err: db::TryGet) -> Self {
+        Self::DbTryGet(Box::new(err))
+    }
 }
 
 impl From<UtxoHashMismatch> for ValidateFilledTransaction {
@@ -217,7 +243,7 @@ impl From<db::Error> for ConnectTransaction {
 #[transitive(from(db::TryGet, db::Error))]
 pub enum ConnectBlock {
     #[error("failed to verify authorization")]
-    Authorization(#[from] error::Authorization),
+    Authorization(#[from] authorization::Error),
     #[error("body too large")]
     BodyTooLarge,
     #[error("error connecting transaction (`{txid}`)")]
@@ -227,6 +253,8 @@ pub enum ConnectBlock {
     },
     #[error(transparent)]
     Db(#[from] Box<db::Error>),
+    #[error(transparent)]
+    ImmatureOutPoint(#[from] ImmatureOutPoint),
     #[error(transparent)]
     InvalidBody(#[from] InvalidBody),
     #[error("invalid header: {0}")]
@@ -355,7 +383,7 @@ impl From<db::Error> for ConnectWithdrawalBundleSubmitted {
 )]
 pub enum Error {
     #[error("failed to verify authorization")]
-    Authorization(#[from] error::Authorization),
+    Authorization(#[from] authorization::Error),
     #[error(transparent)]
     AmountOverflow(#[from] AmountOverflowError),
     #[error("body too large")]
@@ -370,6 +398,8 @@ pub enum Error {
     Db(Box<sneed::Error>),
     #[error("failed to fill inputs for tx ({txid})")]
     FillTransaction { source: FillTransaction, txid: Txid },
+    #[error(transparent)]
+    ImmatureOutPoint(#[from] ImmatureOutPoint),
     #[error(
         "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
         .version,
@@ -407,15 +437,13 @@ pub enum Error {
     #[error("too many sigops")]
     TooManySigops,
     #[error(
-        "protocol would be insolvent after confirming unexpected withdrawal bundle {} in {}; bundle outpoint {} already spent",
+        "protocol would be insolvent after confirming unexpected withdrawal bundle {} in {}; bundle outpoints already spent",
         .m6id,
         .event_block_hash,
-        .outpoint,
     )]
-    UnexpectedWithdrawalBundleInsolvency {
+    UnexpectedWithdrawalBundleConfirmed {
         event_block_hash: bitcoin::BlockHash,
         m6id: M6id,
-        outpoint: OutPoint,
     },
     #[error("Unknown withdrawal bundle: {m6id}")]
     UnknownWithdrawalBundle { m6id: M6id },

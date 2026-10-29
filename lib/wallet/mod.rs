@@ -29,16 +29,19 @@ use crate::{
     types::{
         Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizationError, AuthorizedTransaction, BlockHash, Body,
-        GetValue as _, Header, InPoint, OutPoint, Output, OutputContent,
-        PointedOutput, SpentOutput, THIS_SIDECHAIN, Transaction,
+        CoinbaseTxid, GetValue as _, Header, InPoint, OutPoint, Output,
+        OutputContent, PointedOutput, SpentOutput, THIS_SIDECHAIN, Transaction,
         TransparentAddress, Txid, UtreexoError, UtreexoNodeHash, VERSION,
         Version,
         authorization::{
             self, Authorization, SigningKey, VerifyingKey, get_address,
         },
         orchard::{self, ShardTree, ShardTreeDb, ShardTreeDbTxn},
-        transaction,
-        wallet::Balance,
+        transaction::{
+            self,
+            outpoint::{COINBASE_MATURITY, DEPOSIT_MATURITY},
+        },
+        wallet::{Balance, CoinSelectionHeights},
     },
     util::Watchable,
 };
@@ -217,6 +220,12 @@ pub struct Wallet {
     /// Map each address to it's index
     address_to_index:
         DatabaseUnique<SerdeBincode<TransparentAddress>, U32<BigEndian>>,
+    /// Sidechain heights for each coinbase txid
+    coinbase_height:
+        DatabaseUnique<SerdeBincode<CoinbaseTxid>, SerdeBincode<u32>>,
+    /// Mainchain heights for each deposit txid
+    deposit_mainchain_height:
+        DatabaseUnique<SerdeBincode<bitcoin::Txid>, SerdeBincode<u32>>,
     /// Map each address index to an address
     index_to_address:
         DatabaseUnique<U32<BigEndian>, SerdeBincode<TransparentAddress>>,
@@ -256,7 +265,7 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub const NUM_DBS: u32 = ShardTreeDb::<WalletEnv>::NUM_DBS + 16;
+    pub const NUM_DBS: u32 = ShardTreeDb::<WalletEnv>::NUM_DBS + 18;
 
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
@@ -295,6 +304,13 @@ impl Wallet {
         let seed_db = DatabaseUnique::create(&env, &mut rwtxn, "seed")?;
         let address_to_index =
             DatabaseUnique::create(&env, &mut rwtxn, "address_to_index")?;
+        let coinbase_height =
+            DatabaseUnique::create(&env, &mut rwtxn, "coinbase_height")?;
+        let deposit_mainchain_height = DatabaseUnique::create(
+            &env,
+            &mut rwtxn,
+            "deposit_mainchain_height",
+        )?;
         let index_to_address =
             DatabaseUnique::create(&env, &mut rwtxn, "index_to_address")?;
         let orchard_address_to_index = DatabaseUnique::create(
@@ -341,7 +357,7 @@ impl Wallet {
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 18,
+                        minor: 19,
                         patch: 0,
                     } =>
             {
@@ -358,6 +374,8 @@ impl Wallet {
             env,
             seed: seed_db,
             address_to_index,
+            coinbase_height,
+            deposit_mainchain_height,
             index_to_address,
             orchard_address_to_index,
             orchard_index_to_address,
@@ -677,6 +695,7 @@ impl Wallet {
     pub fn select_transparent_coins(
         &self,
         rotxn: &RoTxn,
+        heights: CoinSelectionHeights,
         value: bitcoin::Amount,
     ) -> Result<(bitcoin::Amount, LinkedHashMap<OutPoint, Output>), Error> {
         let mut utxos: Vec<_> = self
@@ -690,6 +709,36 @@ impl Wallet {
         let mut selected = LinkedHashMap::new();
         let mut total = bitcoin::Amount::ZERO;
         for (outpoint, output) in &utxos {
+            match outpoint {
+                OutPoint::Coinbase { txid, vout: _ } => {
+                    let coinbase_height =
+                        self.coinbase_height.get(rotxn, txid)?;
+                    if heights
+                        .spend_height
+                        .checked_sub(coinbase_height)
+                        .is_none_or(|height_diff| {
+                            height_diff < COINBASE_MATURITY
+                        })
+                    {
+                        continue;
+                    }
+                }
+                OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
+                    let deposit_height =
+                        self.deposit_mainchain_height.get(rotxn, txid)?;
+                    if heights
+                        .main_height
+                        .checked_sub(deposit_height)
+                        .is_none_or(|height_diff| {
+                            height_diff < DEPOSIT_MATURITY
+                        })
+                    {
+                        continue;
+                    }
+                }
+                OutPoint::Regular { .. }
+                | OutPoint::UnsuccessfulWithdrawal { .. } => (),
+            }
             if output.content.is_withdrawal() {
                 continue;
             }
@@ -710,6 +759,7 @@ impl Wallet {
     pub fn create_withdrawal(
         &self,
         accumulator: &Accumulator,
+        heights: CoinSelectionHeights,
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         value: bitcoin::Amount,
         main_fee: bitcoin::Amount,
@@ -726,6 +776,7 @@ impl Wallet {
         let mut rwtxn = self.env.write_txn()?;
         let (total, coins) = self.select_transparent_coins(
             &rwtxn,
+            heights,
             value
                 .checked_add(fee)
                 .ok_or(AmountOverflowError)?
@@ -769,23 +820,10 @@ impl Wallet {
         })
     }
 
-    pub fn create_transparent_transaction(
-        &self,
-        accumulator: &Accumulator,
-        address: TransparentAddress,
-        value: bitcoin::Amount,
-        fee: bitcoin::Amount,
-    ) -> Result<Transaction, Error> {
-        self.create_transparent_transaction_many(
-            accumulator,
-            &BTreeMap::from([(address, value)]),
-            fee,
-        )
-    }
-
     /// Pay each address in `dests`, and pay the change to a new address
     pub fn create_transparent_transaction_many(
         &self,
+        heights: CoinSelectionHeights,
         accumulator: &Accumulator,
         dests: &BTreeMap<TransparentAddress, bitcoin::Amount>,
         fee: bitcoin::Amount,
@@ -802,6 +840,7 @@ impl Wallet {
         let mut rwtxn = self.env.write_txn()?;
         let (total, coins) = self.select_transparent_coins(
             &rwtxn,
+            heights,
             value.checked_add(fee).ok_or(AmountOverflowError)?,
         )?;
         let change = total - value - fee;
@@ -835,6 +874,22 @@ impl Wallet {
             orchard_bundle: None,
             outputs: outputs.into(),
         })
+    }
+
+    pub fn create_transparent_transaction(
+        &self,
+        accumulator: &Accumulator,
+        heights: CoinSelectionHeights,
+        address: TransparentAddress,
+        value: bitcoin::Amount,
+        fee: bitcoin::Amount,
+    ) -> Result<Transaction, Error> {
+        self.create_transparent_transaction_many(
+            heights,
+            accumulator,
+            &BTreeMap::from([(address, value)]),
+            fee,
+        )
     }
 
     /// Create a fully shielded transaction.
@@ -1043,6 +1098,7 @@ impl Wallet {
     pub fn create_shield_transaction<R>(
         &self,
         rng: R,
+        heights: CoinSelectionHeights,
         accumulator: &Accumulator,
         shield_amount: bitcoin::Amount,
         fee: bitcoin::Amount,
@@ -1053,6 +1109,7 @@ impl Wallet {
         let rwtxn = self.env.write_txn()?;
         let (_, coins) = self.select_transparent_coins(
             &rwtxn,
+            heights,
             shield_amount.checked_add(fee).ok_or(AmountOverflowError)?,
         )?;
         let tx = self.create_shield_transaction_from_utxos(
@@ -1130,7 +1187,19 @@ impl Wallet {
     pub fn delete_utxos(&self, outpoints: &[OutPoint]) -> Result<(), Error> {
         let mut rwtxn = self.env.write_txn()?;
         for outpoint in outpoints {
-            self.utxos.delete(&mut rwtxn, outpoint)?;
+            if !self.utxos.delete(&mut rwtxn, outpoint)? {
+                continue;
+            };
+            match outpoint {
+                OutPoint::Coinbase { txid, vout: _ } => {
+                    self.coinbase_height.delete(&mut rwtxn, txid)?;
+                }
+                OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
+                    self.deposit_mainchain_height.delete(&mut rwtxn, txid)?;
+                }
+                OutPoint::Regular { .. }
+                | OutPoint::UnsuccessfulWithdrawal { .. } => (),
+            }
         }
         rwtxn.commit()?;
         Ok(())
@@ -1541,8 +1610,17 @@ impl Wallet {
     pub fn put_utxos_confirmed(
         &self,
         rwtxn: &mut RwTxn,
+        coinbase_heights: &HashMap<CoinbaseTxid, u32>,
+        deposit_main_heights: &HashMap<bitcoin::Txid, u32>,
         utxos: &HashMap<OutPoint, Output>,
     ) -> Result<(), Error> {
+        for (coinbase_txid, height) in coinbase_heights {
+            self.coinbase_height.put(rwtxn, coinbase_txid, height)?;
+        }
+        for (deposit_txid, height) in deposit_main_heights {
+            self.deposit_mainchain_height
+                .put(rwtxn, deposit_txid, height)?;
+        }
         for (outpoint, output) in utxos {
             if self.address_to_index.contains_key(rwtxn, &output.address)? {
                 let _: bool = self.utxos_unconfirmed.delete(rwtxn, outpoint)?;
@@ -1828,6 +1906,8 @@ impl Watchable<()> for Wallet {
             env: _,
             seed,
             address_to_index,
+            coinbase_height: _,
+            deposit_mainchain_height: _,
             index_to_address,
             orchard_address_to_index,
             orchard_index_to_address,
@@ -2048,6 +2128,7 @@ impl MeltBatch {
         &mut self,
     ) -> Option<
         impl FnOnce(
+            CoinSelectionHeights,
             &Accumulator,
             &Wallet,
         )
@@ -2064,8 +2145,16 @@ impl MeltBatch {
         let fee = Self::tx_fee();
         let rng = rand::rngs::ChaCha20Rng::from_rng(&mut self.rng);
         let _ = self.bill_exponents_with_timestamps.pop_front().unwrap();
-        let res = move |accumulator: &Accumulator, wallet: &Wallet| {
-            wallet.create_shield_transaction(rng, accumulator, amount, fee)
+        let res = move |heights: CoinSelectionHeights,
+                        accumulator: &Accumulator,
+                        wallet: &Wallet| {
+            wallet.create_shield_transaction(
+                rng,
+                heights,
+                accumulator,
+                amount,
+                fee,
+            )
         };
         Some(res)
     }

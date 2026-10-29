@@ -1,5 +1,7 @@
 use eframe::egui::{self, Button};
-use thunder_orchard::types::{Address, ShieldedAddress, TransparentAddress};
+use thunder_orchard::types::{
+    Address, ShieldedAddress, TransparentAddress, wallet::CoinSelectionHeights,
+};
 
 use crate::{app::App, gui::util::UiExt};
 
@@ -29,9 +31,22 @@ fn create_transfer(
             )?;
             app.authorize_orchard_bundle(tx)?
         }
-        Address::Transparent(dest) => app
-            .wallet
-            .create_transparent_transaction(&accumulator, dest, amount, fee)?,
+        Address::Transparent(dest) => {
+            let main_height =
+                app.node.try_get_mainchain_tip_height()?.unwrap_or(0);
+            let spend_height =
+                app.node.try_get_height()?.map_or(0, |height| height + 1);
+            app.wallet.create_transparent_transaction(
+                &accumulator,
+                CoinSelectionHeights {
+                    main_height,
+                    spend_height,
+                },
+                dest,
+                amount,
+                fee,
+            )?
+        }
     };
     app.sign_and_send(tx)?;
     Ok(())

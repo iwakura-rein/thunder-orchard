@@ -10,7 +10,7 @@ use thunder_orchard::types::{
     Block, M6id, PointedOutput, ShieldedAddress, SpentOutput,
     TransparentAddress, Txid, WithdrawalBundle,
     net::{Peer, PeerAddress},
-    wallet::{Balance, TransparentTransferDests},
+    wallet::{Balance, CoinSelectionHeights, TransparentTransferDests},
 };
 use thunder_orchard_app_rpc_api::{
     self as rpc_api, typewit::const_marker::Bool,
@@ -411,11 +411,27 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<Txid> {
+        let main_height = self
+            .app
+            .node
+            .try_get_mainchain_tip_height()
+            .map_err(custom_err)?
+            .unwrap_or(0);
+        let spend_height = self
+            .app
+            .node
+            .try_get_height()
+            .map_err(custom_err)?
+            .map_or(0, |height| height + 1);
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = tokio::task::block_in_place(|| {
             self.app.wallet.create_shield_transaction(
                 rand::rng(),
+                CoinSelectionHeights {
+                    main_height,
+                    spend_height,
+                },
                 &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
@@ -461,11 +477,27 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
     ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let main_height = self
+            .app
+            .node
+            .try_get_mainchain_tip_height()
+            .map_err(custom_err)?
+            .unwrap_or(0);
+        let spend_height = self
+            .app
+            .node
+            .try_get_height()
+            .map_err(custom_err)?
+            .map_or(0, |height| height + 1);
         let tx = self
             .app
             .wallet
             .create_transparent_transaction(
                 &accumulator,
+                CoinSelectionHeights {
+                    main_height,
+                    spend_height,
+                },
                 dest,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
@@ -490,10 +522,26 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
             .collect();
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let main_height = self
+            .app
+            .node
+            .try_get_mainchain_tip_height()
+            .map_err(custom_err)?
+            .unwrap_or(0);
+        let spend_height = self
+            .app
+            .node
+            .try_get_height()
+            .map_err(custom_err)?
+            .map_or(0, |height| height + 1);
         let tx = self
             .app
             .wallet
             .create_transparent_transaction_many(
+                CoinSelectionHeights {
+                    main_height,
+                    spend_height,
+                },
                 &accumulator,
                 &dests,
                 Amount::from_sat(fee_sats),
@@ -535,11 +583,27 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
     ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let main_height = self
+            .app
+            .node
+            .try_get_mainchain_tip_height()
+            .map_err(custom_err)?
+            .unwrap_or(0);
+        let spend_height = self
+            .app
+            .node
+            .try_get_height()
+            .map_err(custom_err)?
+            .map_or(0, |height| height + 1);
         let tx = self
             .app
             .wallet
             .create_withdrawal(
                 &accumulator,
+                CoinSelectionHeights {
+                    main_height,
+                    spend_height,
+                },
                 mainchain_address,
                 Amount::from_sat(amount_sats),
                 Amount::from_sat(mainchain_fee_sats),

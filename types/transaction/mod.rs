@@ -1,3 +1,5 @@
+use std::borrow::{Borrow, BorrowMut};
+
 use bitcoin::amount::CheckedSum;
 use borsh::{self, BorshDeserialize, BorshSerialize};
 use educe::Educe;
@@ -273,13 +275,38 @@ impl FilledTransaction {
     }
 }
 
+impl Borrow<Transaction> for FilledTransaction {
+    fn borrow(&self) -> &Transaction {
+        &self.transaction
+    }
+}
+
+impl BorrowMut<Transaction> for FilledTransaction {
+    fn borrow_mut(&mut self) -> &mut Transaction {
+        &mut self.transaction
+    }
+}
+
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Authorized<T> {
     pub transaction: T,
     /// Authorizations are called witnesses in Bitcoin.
     pub authorizations: Vec<Authorization>,
 }
-pub type AuthorizedTransaction = Authorized<Transaction>;
+
+pub type AuthorizedTransaction<T = Transaction> = Authorized<T>;
+
+impl<T> Borrow<T> for Authorized<T> {
+    fn borrow(&self) -> &T {
+        &self.transaction
+    }
+}
+
+impl Borrow<Transaction> for Authorized<FilledTransaction> {
+    fn borrow(&self) -> &Transaction {
+        &self.transaction.transaction
+    }
+}
 
 #[cfg(test)]
 mod test {
