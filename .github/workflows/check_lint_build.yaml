@@ -131,8 +131,8 @@ jobs:
             echo "$name=$tag" >> "$GITHUB_OUTPUT"
           done
         env:
-          BITCOIN_PATCHED_URL: https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          ENFORCER_URL: https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
+          BITCOIN_PATCHED_URL: https://releases.ecash.com/L1-ecash-bitcoin/mainnet/latest/L1-ecash-bitcoin-latest-x86_64-unknown-linux-gnu.zip
+          ENFORCER_URL: https://releases.ecash.com/bip300301-enforcer/stable/latest/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
 
       - name: Cache bitcoin-patched
         id: cache-bitcoin-patched
@@ -145,12 +145,12 @@ jobs:
         if: steps.cache-bitcoin-patched.outputs.cache-hit != 'true'
         run: |
           cd "${{ runner.temp }}"
-          wget -q https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          unzip -q L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
+          wget -q https://releases.ecash.com/L1-ecash-bitcoin/mainnet/latest/L1-ecash-bitcoin-latest-x86_64-unknown-linux-gnu.zip
+          unzip -q L1-ecash-bitcoin-latest-x86_64-unknown-linux-gnu.zip
+          rm L1-ecash-bitcoin-latest-x86_64-unknown-linux-gnu.zip
           mkdir -p deps
           rm -rf deps/bitcoin-patched
-          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu deps/bitcoin-patched
+          mv L1-ecash-bitcoin-*-x86_64-unknown-linux-gnu deps/bitcoin-patched
           chmod +x deps/bitcoin-patched/bitcoind deps/bitcoin-patched/bitcoin-cli
 
       - name: Cache bitcoin unpatched
@@ -185,13 +185,13 @@ jobs:
         if: steps.cache-enforcer.outputs.cache-hit != 'true'
         run: |
           cd "${{ runner.temp }}"
-          wget -q https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
+          wget -q https://releases.ecash.com/bip300301-enforcer/stable/latest/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
           unzip -q bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
           rm bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
           mkdir -p deps
           rm -f deps/bip300301-enforcer
-          mv bip300301-enforcer-latest-x86_64-unknown-linux-gnu/bip300301-enforcer-*-x86_64-unknown-linux-gnu deps/bip300301-enforcer
-          rm -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu
+          mv bip300301-enforcer-*-x86_64-unknown-linux-gnu/bip300301-enforcer deps/bip300301-enforcer
+          rm -r bip300301-enforcer-*-x86_64-unknown-linux-gnu
           chmod +x deps/bip300301-enforcer
 
       - name: Restore electrs from cache
