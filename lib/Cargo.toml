@@ -20,7 +20,6 @@ bitcoin = { workspace = true }
 blake3 = { workspace = true }
 borsh = { workspace = true }
 bytes = { workspace = true }
-chrono = { workspace = true }
 const-hex = { workspace = true }
 curve25519-dalek = { workspace = true, features = ["group"] }
 educe = { workspace = true, features = ["Clone", "Debug", "Default"] }
@@ -32,6 +31,7 @@ hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
 hickory-resolver = { workspace = true, features = ["system-config", "tokio"] }
 incrementalmerkletree = { workspace = true }
+jiff = { workspace = true, features = ["std"] }
 jsonrpsee = { workspace = true }
 nonempty = { workspace = true }
 orchard = { workspace = true }

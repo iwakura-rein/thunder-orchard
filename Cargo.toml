@@ -24,14 +24,13 @@ blake3 = "1.4.1"
 borsh = "1.3.1"
 bytemuck = "1.22.0"
 bytes = "1.4.0"
-chrono = "0.4.40"
 clap = "4.5.4"
 const-hex = "1.19.1"
 curve25519-dalek = { version = "5", default-features = false }
 dirs = "5.0.1"
 dotenvy = "0.15.7"
 ed25519-dalek = "2.1.1"
-educe = { version = "0.6.0", default-features = false }
+educe = { version = "0.8.0", default-features = false }
 errors = "0.1.0"
 eframe = { version = "0.35.0", default-features = false }
 error-fatality = "0.1.2"
@@ -45,6 +44,7 @@ hickory-resolver = { version = "0.26", default-features = false }
 http = "1.2.0"
 human-size = "0.4.3"
 incrementalmerkletree = "0.8.2"
+jiff = { version = "1.0", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["tracing"] }
 libtest-mimic = "0.8.1"
 merkle-cbt = "0.3.2"
