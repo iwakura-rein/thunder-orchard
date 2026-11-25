@@ -107,7 +107,7 @@ impl BottomPanel {
         let rt_guard = initialized.app.runtime.enter();
         match initialized.wallet_updated.poll_next() {
             Some(Poll::Ready(())) => {
-                self.balance = match initialized.app.wallet.get_balance() {
+                self.balance = match initialized.app.get_balance() {
                     Ok(balance) => Some(Some(balance.total())),
                     Err(err) => {
                         let err = anyhow::Error::from(err);

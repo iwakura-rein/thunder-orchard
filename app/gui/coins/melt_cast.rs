@@ -29,7 +29,7 @@ impl MeltInput {
         let Some(app) = app else {
             return InnerResponse::new(None, ui.response());
         };
-        let transparent_balance = match app.wallet.get_balance() {
+        let transparent_balance = match app.get_balance() {
             Ok(balance) => balance.available_transparent,
             Err(err) => {
                 let err = anyhow::Error::from(err);
@@ -205,7 +205,7 @@ impl CastInput {
         let Some(app) = app else {
             return InnerResponse::new(None, ui.response());
         };
-        let shielded_balance = match app.wallet.get_balance() {
+        let shielded_balance = match app.get_balance() {
             Ok(balance) => balance.available_shielded,
             Err(err) => {
                 let err = anyhow::Error::from(err);

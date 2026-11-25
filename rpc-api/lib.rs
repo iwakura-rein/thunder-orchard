@@ -418,7 +418,7 @@ pub mod wallet {
         TransparentAddress, Txid,
         orchard::Nullifier,
         transaction::{self, Outputs},
-        wallet::{Balance, TransparentTransferDests},
+        wallet::{Balance, TransparentTransferDests, WalletUtxo},
     };
     use utoipa::ToSchema;
 
@@ -584,9 +584,9 @@ pub mod wallet {
             &self,
         ) -> RpcResult<Vec<OrchardNote>>;
 
-        /// Get wallet UTXOs
+        /// Get wallet UTXOs with their status for the next spend.
         #[method(name = "get_wallet_utxos")]
-        async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
+        async fn get_wallet_utxos(&self) -> RpcResult<Vec<WalletUtxo>>;
 
         /// Get wallet STXOs
         #[method(name = "get_wallet_stxos")]
@@ -600,11 +600,11 @@ pub mod wallet {
             &self,
         ) -> RpcResult<Vec<SpentOutput<PointedOutput>>>;
 
-        /// Get unconfirmed wallet UTXOs
+        /// Get unconfirmed wallet UTXOs with `spendable` set to false.
         #[method(name = "get_wallet_utxos_unconfirmed")]
         async fn get_wallet_utxos_unconfirmed(
             &self,
-        ) -> RpcResult<Vec<PointedOutput>>;
+        ) -> RpcResult<Vec<WalletUtxo>>;
 
         /// Attempt to mine a sidechain block
         #[open_api_method(output_schema(ToSchema))]
