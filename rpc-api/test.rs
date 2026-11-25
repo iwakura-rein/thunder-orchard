@@ -318,3 +318,22 @@ fn check_schemas() -> anyhow::Result<()> {
     let () = check_schema::<crate::wallet::RpcDoc>()?;
     Ok(())
 }
+
+#[test]
+fn wallet_coin_schemas_include_spendable() -> anyhow::Result<()> {
+    let schema = serde_json::to_value(
+        <crate::wallet::RpcDoc as utoipa::OpenApi>::openapi(),
+    )?;
+    for method in ["get_wallet_utxos", "get_wallet_utxos_unconfirmed"] {
+        let coin = &schema["paths"][method]["post"]["responses"]["200"]["content"]
+            ["application/json"]["schema"]["items"];
+        assert_eq!(coin["properties"]["spendable"]["type"], "boolean");
+        let required = coin["required"].as_array().ok_or_else(|| {
+            anyhow::anyhow!("wallet coin schema has no required fields")
+        })?;
+        assert!(required.contains(&serde_json::json!("spendable")));
+        assert!(coin["properties"].get("outpoint").is_some());
+        assert!(coin["properties"].get("output").is_some());
+    }
+    Ok(())
+}

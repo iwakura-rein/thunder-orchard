@@ -1,5 +1,151 @@
 use crate::wallet::Wallet;
 
+mod transparent_maturity {
+    use bitcoin::hashes::Hash as _;
+
+    use crate::types::AccumulatorDiff;
+    use crate::wallet::*;
+
+    fn check_balance(coinbase: bool, age: u32) -> anyhow::Result<()> {
+        let directory = temp_dir::TempDir::new()?;
+        let wallet = Wallet::new(directory.path())?;
+        wallet.set_seed(&[1u8; 64])?;
+        let mut txn = wallet.env().write_txn()?;
+        let address = wallet.get_new_transparent_address(&mut txn)?;
+        let value = Amount::from_sat(100_000);
+        let height = 100;
+        let mut coinbase_heights = HashMap::new();
+        let mut deposit_heights = HashMap::new();
+        let outpoint = if coinbase {
+            let txid = CoinbaseTxid::from([1u8; 32]);
+            coinbase_heights.insert(txid, height);
+            OutPoint::Coinbase { txid, vout: 0 }
+        } else {
+            let txid = bitcoin::Txid::from_byte_array([2u8; 32]);
+            deposit_heights.insert(txid, height);
+            OutPoint::Deposit(bitcoin::OutPoint { txid, vout: 0 })
+        };
+        let output = Output {
+            address,
+            content: OutputContent::Value(value),
+        };
+        let mut accumulator = Accumulator::default();
+        let mut diff = AccumulatorDiff::default();
+        diff.insert(
+            (&PointedOutput {
+                outpoint,
+                output: output.clone(),
+            })
+                .into(),
+        );
+        accumulator.apply_diff(diff)?;
+        wallet.put_utxos_confirmed(
+            &mut txn,
+            &coinbase_heights,
+            &deposit_heights,
+            &HashMap::from([(outpoint, output)]),
+        )?;
+        txn.commit()?;
+        let heights = CoinSelectionHeights {
+            main_height: if coinbase { 1_000 } else { height + age },
+            spend_height: if coinbase { height + age } else { 1_000 },
+        };
+        let txn = wallet.env().read_txn()?;
+        let selected = wallet.select_transparent_coins(&txn, heights, value);
+        let available = if age < 50 {
+            assert!(matches!(selected, Err(Error::NotEnoughFunds)));
+            Amount::ZERO
+        } else {
+            assert_eq!(selected?.0, value);
+            value
+        };
+        let balance = wallet.get_balance(heights)?;
+        assert_eq!(balance.total_transparent, value);
+        assert_eq!(balance.available_transparent, available);
+        let coins = wallet.get_wallet_utxos(&txn, heights)?;
+        assert_eq!(coins.len(), 1);
+        assert_eq!(coins[0].outpoint, outpoint);
+        assert_eq!(coins[0].output.get_value(), value);
+        assert_eq!(coins[0].spendable, available != Amount::ZERO);
+        let json = serde_json::to_value(&coins[0])?;
+        assert_eq!(json["spendable"], available != Amount::ZERO);
+        let legacy: PointedOutput = serde_json::from_value(json)?;
+        assert_eq!(legacy.outpoint, outpoint);
+        assert_eq!(legacy.output.get_value(), value);
+        drop(txn);
+        let fee = Amount::from_sat(1_000);
+        let transaction = wallet.create_shield_transaction(
+            rand::rng(),
+            heights,
+            &accumulator,
+            value - fee,
+            fee,
+        );
+        if available == Amount::ZERO {
+            assert!(matches!(transaction, Err(Error::NotEnoughFunds)));
+        } else {
+            let transaction = transaction?;
+            assert_eq!(transaction.inputs.len(), 1);
+            assert!(transaction.outputs.is_empty());
+            assert!(transaction.orchard_bundle.is_some());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn immature_deposit_balance_matches_coin_selection() -> anyhow::Result<()> {
+        check_balance(false, 49)
+    }
+
+    #[test]
+    fn mature_deposit_balance_matches_coin_selection() -> anyhow::Result<()> {
+        check_balance(false, 50)
+    }
+
+    #[test]
+    fn immature_coinbase_balance_matches_coin_selection() -> anyhow::Result<()>
+    {
+        check_balance(true, 49)
+    }
+
+    #[test]
+    fn mature_coinbase_balance_matches_coin_selection() -> anyhow::Result<()> {
+        check_balance(true, 50)
+    }
+
+    #[test]
+    fn unconfirmed_coin_is_not_spendable() -> anyhow::Result<()> {
+        let directory = temp_dir::TempDir::new()?;
+        let wallet = Wallet::new(directory.path())?;
+        wallet.set_seed(&[1u8; 64])?;
+        let mut txn = wallet.env().write_txn()?;
+        let address = wallet.get_new_transparent_address(&mut txn)?;
+        let outpoint = OutPoint::Regular {
+            txid: Txid::from([1u8; 32]),
+            vout: 0,
+        };
+        wallet.put_utxos_unconfirmed(
+            &mut txn,
+            &HashMap::from([(
+                outpoint,
+                Output {
+                    address,
+                    content: OutputContent::Value(Amount::from_sat(100_000)),
+                },
+            )]),
+        )?;
+        txn.commit()?;
+        let txn = wallet.env().read_txn()?;
+        let coins = wallet.get_wallet_utxos_unconfirmed(&txn)?;
+        assert_eq!(coins.len(), 1);
+        assert_eq!(coins[0].outpoint, outpoint);
+        assert!(!coins[0].spendable);
+        let json = serde_json::to_value(&coins[0])?;
+        assert_eq!(json["spendable"], false);
+        Ok(())
+    }
+}
+
 #[test]
 fn test_get_or_generate_last_address() -> anyhow::Result<()> {
     let nanos = std::time::SystemTime::now()

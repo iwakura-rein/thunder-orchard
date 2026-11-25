@@ -5,13 +5,24 @@ use serde::{Deserialize, Serialize};
 use serde_with::{MapPreventDuplicates, serde_as};
 use utoipa::ToSchema;
 
-use crate::address::TransparentAddress;
+use crate::{
+    address::TransparentAddress,
+    transaction::{OutPoint, Output},
+};
 
 /// Block heights used to select coins
 #[derive(Clone, Copy, Debug)]
 pub struct CoinSelectionHeights {
     pub main_height: u32,
     pub spend_height: u32,
+}
+
+/// A wallet coin and its status for the next spend.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct WalletUtxo {
+    pub outpoint: OutPoint,
+    pub output: Output,
+    pub spendable: bool,
 }
 
 /// Destinations of a transparent transfer. Each address takes a value in sats.

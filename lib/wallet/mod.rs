@@ -41,7 +41,7 @@ use crate::{
             self,
             outpoint::{COINBASE_MATURITY, DEPOSIT_MATURITY},
         },
-        wallet::{Balance, CoinSelectionHeights},
+        wallet::{Balance, CoinSelectionHeights, WalletUtxo},
     },
     util::Watchable,
 };
@@ -697,6 +697,31 @@ impl Wallet {
         Ok((txn, total, anchor, selected))
     }
 
+    fn transparent_coin_is_mature(
+        &self,
+        rotxn: &RoTxn,
+        heights: CoinSelectionHeights,
+        outpoint: &OutPoint,
+    ) -> Result<bool, Error> {
+        let (height, tip_height, maturity) = match outpoint {
+            OutPoint::Coinbase { txid, .. } => (
+                self.coinbase_height.get(rotxn, txid)?,
+                heights.spend_height,
+                COINBASE_MATURITY,
+            ),
+            OutPoint::Deposit(bitcoin::OutPoint { txid, .. }) => (
+                self.deposit_mainchain_height.get(rotxn, txid)?,
+                heights.main_height,
+                DEPOSIT_MATURITY,
+            ),
+            OutPoint::Regular { .. }
+            | OutPoint::UnsuccessfulWithdrawal { .. } => return Ok(true),
+        };
+        Ok(tip_height
+            .checked_sub(height)
+            .is_some_and(|age| age >= maturity))
+    }
+
     pub fn select_transparent_coins(
         &self,
         rotxn: &RoTxn,
@@ -714,35 +739,8 @@ impl Wallet {
         let mut selected = LinkedHashMap::new();
         let mut total = bitcoin::Amount::ZERO;
         for (outpoint, output) in &utxos {
-            match outpoint {
-                OutPoint::Coinbase { txid, vout: _ } => {
-                    let coinbase_height =
-                        self.coinbase_height.get(rotxn, txid)?;
-                    if heights
-                        .spend_height
-                        .checked_sub(coinbase_height)
-                        .is_none_or(|height_diff| {
-                            height_diff < COINBASE_MATURITY
-                        })
-                    {
-                        continue;
-                    }
-                }
-                OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
-                    let deposit_height =
-                        self.deposit_mainchain_height.get(rotxn, txid)?;
-                    if heights
-                        .main_height
-                        .checked_sub(deposit_height)
-                        .is_none_or(|height_diff| {
-                            height_diff < DEPOSIT_MATURITY
-                        })
-                    {
-                        continue;
-                    }
-                }
-                OutPoint::Regular { .. }
-                | OutPoint::UnsuccessfulWithdrawal { .. } => (),
+            if !self.transparent_coin_is_mature(rotxn, heights, outpoint)? {
+                continue;
             }
             if output.content.is_withdrawal() {
                 continue;
@@ -1651,17 +1649,24 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_balance(&self) -> Result<Balance, Error> {
+    pub fn get_balance(
+        &self,
+        heights: CoinSelectionHeights,
+    ) -> Result<Balance, Error> {
         let mut balance = Balance::default();
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let () = self.utxos.iter(&rotxn)?.map_err(Error::from).for_each(
-            |(_, utxo)| {
+            |(outpoint, utxo)| {
                 let value = utxo.get_value();
                 balance.total_transparent = balance
                     .total_transparent
                     .checked_add(value)
                     .ok_or(AmountOverflowError)?;
-                if !utxo.content.is_withdrawal() {
+                if !utxo.content.is_withdrawal()
+                    && self.transparent_coin_is_mature(
+                        &rotxn, heights, &outpoint,
+                    )?
+                {
                     balance.available_transparent = balance
                         .available_transparent
                         .checked_add(value)
@@ -1764,6 +1769,42 @@ impl Wallet {
     ) -> Result<HashMap<OutPoint, Output>, Error> {
         let utxos = self.utxos_unconfirmed.iter(rotxn)?.collect()?;
         Ok(utxos)
+    }
+
+    pub fn get_wallet_utxos(
+        &self,
+        rotxn: &RoTxn,
+        heights: CoinSelectionHeights,
+    ) -> Result<Vec<WalletUtxo>, Error> {
+        self.get_utxos(rotxn)?
+            .into_iter()
+            .map(|(outpoint, output)| {
+                let spendable = !output.content.is_withdrawal()
+                    && self.transparent_coin_is_mature(
+                        rotxn, heights, &outpoint,
+                    )?;
+                Ok(WalletUtxo {
+                    outpoint,
+                    output,
+                    spendable,
+                })
+            })
+            .collect()
+    }
+
+    pub fn get_wallet_utxos_unconfirmed(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Vec<WalletUtxo>, Error> {
+        Ok(self
+            .get_utxos_unconfirmed(rotxn)?
+            .into_iter()
+            .map(|(outpoint, output)| WalletUtxo {
+                outpoint,
+                output,
+                spendable: false,
+            })
+            .collect())
     }
 
     pub fn get_shielded_addresses(

@@ -10,7 +10,9 @@ use thunder_orchard::types::{
     Block, M6id, PointedOutput, ShieldedAddress, SpentOutput,
     TransparentAddress, Txid, WithdrawalBundle,
     net::{Peer, PeerAddress},
-    wallet::{Balance, CoinSelectionHeights, TransparentTransferDests},
+    wallet::{
+        Balance, CoinSelectionHeights, TransparentTransferDests, WalletUtxo,
+    },
 };
 use thunder_orchard_app_rpc_api::{
     self as rpc_api, typewit::const_marker::Bool,
@@ -384,7 +386,7 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
 #[async_trait]
 impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
     async fn balance(&self) -> RpcResult<Balance> {
-        self.app.wallet.get_balance().map_err(custom_err)
+        self.app.get_balance().map_err(custom_err)
     }
 
     async fn create_deposit(
@@ -805,37 +807,25 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
         Ok(res)
     }
 
-    async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
-        let utxos = {
-            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
-                custom_err(thunder_orchard::wallet::Error::from(err))
-            })?;
-            self.app.wallet.get_utxos(&rotxn).map_err(custom_err)?
-        };
-        let utxos = utxos
-            .into_iter()
-            .map(|(outpoint, output)| PointedOutput { outpoint, output })
-            .collect();
-        Ok(utxos)
+    async fn get_wallet_utxos(&self) -> RpcResult<Vec<WalletUtxo>> {
+        let heights = self.app.coin_selection_heights().map_err(custom_err)?;
+        let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+            custom_err(thunder_orchard::wallet::Error::from(err))
+        })?;
+        self.app
+            .wallet
+            .get_wallet_utxos(&rotxn, heights)
+            .map_err(custom_err)
     }
 
-    async fn get_wallet_utxos_unconfirmed(
-        &self,
-    ) -> RpcResult<Vec<PointedOutput>> {
-        let utxos = {
-            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
-                custom_err(thunder_orchard::wallet::Error::from(err))
-            })?;
-            self.app
-                .wallet
-                .get_utxos_unconfirmed(&rotxn)
-                .map_err(custom_err)?
-        };
-        let utxos = utxos
-            .into_iter()
-            .map(|(outpoint, output)| PointedOutput { outpoint, output })
-            .collect();
-        Ok(utxos)
+    async fn get_wallet_utxos_unconfirmed(&self) -> RpcResult<Vec<WalletUtxo>> {
+        let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+            custom_err(thunder_orchard::wallet::Error::from(err))
+        })?;
+        self.app
+            .wallet
+            .get_wallet_utxos_unconfirmed(&rotxn)
+            .map_err(custom_err)
     }
 
     async fn mine(&self, fee: Option<u64>) -> RpcResult<()> {

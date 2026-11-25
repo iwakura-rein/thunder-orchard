@@ -26,6 +26,7 @@ use thunder_orchard::{
             },
         },
         transaction,
+        wallet::{Balance, CoinSelectionHeights},
     },
     wallet::{self, Wallet},
 };
@@ -249,6 +250,23 @@ pub struct App {
 }
 
 impl App {
+    pub fn get_balance(&self) -> Result<Balance, Error> {
+        Ok(self.wallet.get_balance(self.coin_selection_heights()?)?)
+    }
+
+    pub fn coin_selection_heights(
+        &self,
+    ) -> Result<CoinSelectionHeights, Error> {
+        let main_height =
+            self.node.try_get_mainchain_tip_height()?.unwrap_or(0);
+        let spend_height =
+            self.node.try_get_height()?.map_or(0, |height| height + 1);
+        Ok(CoinSelectionHeights {
+            main_height,
+            spend_height,
+        })
+    }
+
     async fn task(
         node: Arc<Node<MainchainTransport>>,
         wallet: Wallet,
