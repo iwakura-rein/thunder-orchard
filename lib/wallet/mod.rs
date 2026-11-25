@@ -7,13 +7,17 @@ use std::{
 use ::orchard::keys::{FullViewingKey, IncomingViewingKey, OutgoingViewingKey};
 use bip32ish::U31;
 use bitcoin::{Amount, amount::CheckedSum as _};
-use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 use hashlink::LinkedHashMap;
 use heed::{
     byteorder::BigEndian,
     types::{Bytes, SerdeBincode, U8, U32},
+};
+use jiff::{
+    SignedDuration, Timestamp, ToSpan as _,
+    civil::{DateTime, Time, Weekday},
+    tz::TimeZone,
 };
 use parking_lot::RwLock;
 use rand::SeedableRng;
@@ -1971,15 +1975,15 @@ pub const STANDARD_FEE: Amount = Amount::from_sat(1000);
 /// Convert a bill exponent (n in 2^n sats) to the weekday on which a 2^n sats
 /// bill should be melted or cast. Bills of the same denomination share a
 /// weekday across all users, forming an anonymity set.
-fn bill_exponent_to_weekday(exp: u32) -> chrono::Weekday {
+fn bill_exponent_to_weekday(exp: u32) -> Weekday {
     match exp % 7 {
-        0 => chrono::Weekday::Sat,
-        1 => chrono::Weekday::Fri,
-        2 => chrono::Weekday::Thu,
-        3 => chrono::Weekday::Wed,
-        4 => chrono::Weekday::Tue,
-        5 => chrono::Weekday::Mon,
-        6 => chrono::Weekday::Sun,
+        0 => Weekday::Saturday,
+        1 => Weekday::Friday,
+        2 => Weekday::Thursday,
+        3 => Weekday::Wednesday,
+        4 => Weekday::Tuesday,
+        5 => Weekday::Monday,
+        6 => Weekday::Sunday,
         _ => unreachable!(),
     }
 }
@@ -1987,15 +1991,12 @@ fn bill_exponent_to_weekday(exp: u32) -> chrono::Weekday {
 /// Decompose `amount` into power-of-two bill denominations (one per set bit)
 /// and assign each a timestamp on the weekday for its denomination at a
 /// randomized time of day. Returned sorted by timestamp, low to high.
-fn schedule_bills<R>(
-    mut rng: R,
-    amount: Amount,
-) -> VecDeque<(u32, DateTime<Utc>)>
+fn schedule_bills<R>(mut rng: R, amount: Amount) -> VecDeque<(u32, Timestamp)>
 where
     R: orchard::CryptoRng,
 {
     use rand::RngExt as _;
-    let now = Utc::now();
+    let now = Timestamp::now().to_zoned_datetime(TimeZone::UTC);
     let mut bill_exponents_with_timestamps: Vec<_> = std::iter::from_fn({
         let mut amount_remaining = amount.to_sat();
         move || {
@@ -2006,26 +2007,28 @@ where
                 amount_remaining -= 1 << bill_exponent;
                 let on_weekday = bill_exponent_to_weekday(bill_exponent);
                 let on_date = {
-                    let days_from_now = on_weekday.days_since(now.weekday());
-                    now.date_naive() + chrono::Days::new(days_from_now as u64)
+                    let days_from_now = on_weekday.since(now.weekday());
+                    now.date() + days_from_now.days()
                 };
                 let time_of_day = if now.weekday() == on_weekday {
-                    let min_secs = now.num_seconds_from_midnight();
-                    chrono::NaiveTime::from_num_seconds_from_midnight_opt(
-                        rng.random_range(min_secs..=86_399),
-                        0,
-                    )
-                    .unwrap()
+                    let min_secs = now
+                        .duration_since(&now.start_of_day().unwrap())
+                        .as_secs();
+                    Time::midnight()
+                        + rng.random_range(min_secs..=86_399).seconds()
                 } else {
-                    chrono::NaiveTime::from_hms_opt(
+                    Time::new(
                         rng.random_range(0..=23),
                         rng.random_range(0..=59),
                         rng.random_range(0..=59),
+                        0,
                     )
                     .unwrap()
                 };
-                let timestamp =
-                    Utc.from_utc_datetime(&on_date.and_time(time_of_day));
+                let timestamp = DateTime::from_parts(on_date, time_of_day)
+                    .to_zoned_datetime(TimeZone::UTC)
+                    .unwrap()
+                    .timestamp();
                 Some((bill_exponent, timestamp))
             }
         }
@@ -2041,7 +2044,7 @@ pub struct Cast {
     /// Bill amounts in exponent form (n in 2^n sats) with a timestamp
     /// indicating the time at which a tx should be created.
     /// Sorted by timestamp, low to high
-    bill_exponents_with_timestamps: VecDeque<(u32, DateTime<Utc>)>,
+    bill_exponents_with_timestamps: VecDeque<(u32, Timestamp)>,
     rng: rand::rngs::ChaCha20Rng,
 }
 
@@ -2075,10 +2078,11 @@ impl Cast {
     > {
         let (bill_exponent, ts) =
             self.bill_exponents_with_timestamps.front()?;
-        let sleep_duration =
-            std::cmp::max(*ts - Utc::now(), chrono::TimeDelta::zero())
-                .to_std()
-                .unwrap();
+        let sleep_duration = std::cmp::max(
+            ts.duration_since(Timestamp::now()),
+            SignedDuration::ZERO,
+        )
+        .unsigned_abs();
         tokio::time::sleep(sleep_duration).await;
         let amount = Amount::from_sat(1 << bill_exponent);
         let fee = Self::tx_fee();
@@ -2106,7 +2110,7 @@ pub struct MeltBatch {
     /// Bill amounts in exponent form (n in 2^n sats) with a timestamp
     /// indicating the time at which a tx should be created.
     /// Sorted by timestamp, low to high
-    bill_exponents_with_timestamps: VecDeque<(u32, DateTime<Utc>)>,
+    bill_exponents_with_timestamps: VecDeque<(u32, Timestamp)>,
     rng: rand::rngs::ChaCha20Rng,
 }
 
@@ -2141,10 +2145,11 @@ impl MeltBatch {
     > {
         let (bill_exponent, ts) =
             self.bill_exponents_with_timestamps.front()?;
-        let sleep_duration =
-            std::cmp::max(*ts - Utc::now(), chrono::TimeDelta::zero())
-                .to_std()
-                .unwrap();
+        let sleep_duration = std::cmp::max(
+            ts.duration_since(Timestamp::now()),
+            SignedDuration::ZERO,
+        )
+        .unsigned_abs();
         tokio::time::sleep(sleep_duration).await;
         let amount = Amount::from_sat(1 << bill_exponent);
         let fee = Self::tx_fee();
